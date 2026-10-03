@@ -5,7 +5,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+### Added
+- `ProvideBatch` registers a group of constructors, each with its own
+  `ProvideOption`s, as a single atomic operation: either every constructor
+  in the batch is registered, or none of them are. A failed batch leaves
+  the providers, graph nodes, scope exports and value caches unchanged.
+  The combined dependency graph is always checked for cycles when the
+  batch commits, including for containers created with
+  `DeferAcyclicVerification`.
 
 ## [1.19.0] - 2025-05-13
 

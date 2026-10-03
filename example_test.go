@@ -22,6 +22,7 @@ package dig_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 
@@ -66,4 +67,55 @@ func Example_minimal() {
 
 	// Output:
 	// [foo] You've been invoked
+}
+
+func Example_provideBatch() {
+	type Config struct{ Name string }
+	type Service struct{ Name string }
+
+	c := dig.New()
+
+	// A whole group of constructors is registered at once. The service
+	// constructor may depend on a type produced by an earlier entry in the
+	// same batch.
+	err := c.ProvideBatch(
+		dig.BatchProvider{
+			Constructor: func() *Config { return &Config{Name: "myapp"} },
+		},
+		dig.BatchProvider{
+			Constructor: func(cfg *Config) *Service {
+				return &Service{Name: cfg.Name}
+			},
+			Options: []dig.ProvideOption{dig.Name("main")},
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	type params struct {
+		dig.In
+
+		Service *Service `name:"main"`
+	}
+	if err := c.Invoke(func(p params) {
+		fmt.Println(p.Service.Name)
+	}); err != nil {
+		panic(err)
+	}
+
+	// A batch that fails (here, a duplicate registration) changes nothing:
+	// neither constructor is left behind in the container.
+	err = c.ProvideBatch(
+		dig.BatchProvider{Constructor: func() *Config { return &Config{} }},
+		dig.BatchProvider{Constructor: func() *Config { return &Config{} }},
+	)
+	if err == nil {
+		panic("expected duplicate registration to fail")
+	}
+	fmt.Println("failed batch left the container untouched")
+
+	// Output:
+	// myapp
+	// failed batch left the container untouched
 }
