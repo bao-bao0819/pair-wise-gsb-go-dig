@@ -290,6 +290,8 @@ func (s *Scope) Decorate(decorator interface{}, opts ...DecorateOption) error {
 			}
 		}
 	}
+
+	s.noteRegistration()
 	return nil
 }
 

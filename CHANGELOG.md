@@ -5,7 +5,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+
+### Added
+- `Container.PlanInterfaceBindings` and `Scope.PlanInterfaceBindings` plan
+  bindings from interfaces to the unique assignable concrete provider output
+  visible from a scope. The returned `InterfaceBindingPlan` installs all
+  bindings atomically via `Commit`, fails if the container changed since
+  planning, and leaves nothing behind on failure.
 
 ## [1.19.0] - 2025-05-13
 

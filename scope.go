@@ -95,6 +95,12 @@ type Scope struct {
 
 	// clockSrc stores the source of time. Defaults to system clock.
 	clockSrc digclock.Clock
+
+	// registrations counts the successful registrations (Provide, Decorate,
+	// and committed interface binding plans) made anywhere in this scope
+	// tree. It is only ever incremented on the root scope of the tree, and
+	// is used to detect stale InterfaceBindingPlans.
+	registrations uint64
 }
 
 func newScope() *Scope {
@@ -309,6 +315,12 @@ func (s *Scope) rootScope() *Scope {
 		curr = curr.parentScope
 	}
 	return curr
+}
+
+// noteRegistration records that a registration was made somewhere in this
+// scope tree, invalidating any InterfaceBindingPlans created so far.
+func (s *Scope) noteRegistration() {
+	s.rootScope().registrations++
 }
 
 // String representation of the entire Scope

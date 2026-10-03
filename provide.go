@@ -544,6 +544,8 @@ func (s *Scope) provide(ctor interface{}, opts provideOptions) (err error) {
 			}
 		}
 	}
+
+	origScope.noteRegistration()
 	return nil
 }
 
