@@ -5,7 +5,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+### Added
+- `ProvideBatch` registers a group of constructors atomically: the whole
+  batch, along with each constructor's options, either takes effect at once
+  or leaves the container completely unchanged on failure.
 
 ## [1.19.0] - 2025-05-13
 

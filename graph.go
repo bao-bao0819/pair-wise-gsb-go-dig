@@ -113,3 +113,9 @@ func (gh *graphHolder) Rollback() {
 	gh.nodes = gh.nodes[:gh.snap]
 	gh.snap = -1
 }
+
+// Commit discards a previously captured snapshot, keeping the nodes that
+// were added after it. This is a no-op if no snapshot was captured.
+func (gh *graphHolder) Commit() {
+	gh.snap = -1
+}
