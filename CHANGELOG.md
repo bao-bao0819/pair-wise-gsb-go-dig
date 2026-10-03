@@ -5,7 +5,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+### Added
+- `PlanInterfaceBindings` on `Container` and `Scope` plans bindings from a
+  set of interfaces to the unique assignable concrete types produced by
+  visible constructors, and `BindingPlan.Commit` installs the whole plan
+  atomically. Planning inspects constructor signatures only, existing
+  explicit interface providers (e.g. via `As`) take priority, and a plan
+  that went stale due to later registrations is rejected on commit.
 
 ## [1.19.0] - 2025-05-13
 

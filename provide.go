@@ -517,6 +517,7 @@ func (s *Scope) provide(ctor interface{}, opts provideOptions) (err error) {
 	}
 
 	s.nodes = append(s.nodes, n)
+	s.provideVersion++
 
 	// Record introspection info for caller if Info option is specified
 	if info := opts.Info; info != nil {

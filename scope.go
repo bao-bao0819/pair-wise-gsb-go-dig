@@ -74,6 +74,10 @@ type Scope struct {
 	// Flag indicating whether the graph has been checked for cycles.
 	isVerifiedAcyclic bool
 
+	// Number of successful registrations made to this Scope.
+	// Used to detect changes that invalidate a BindingPlan.
+	provideVersion int
+
 	// Defer acyclic check on provide until Invoke.
 	deferAcyclicVerification bool
 
