@@ -37,14 +37,15 @@ type ProvideOption interface {
 }
 
 type provideOptions struct {
-	Name           string
-	Group          string
-	Info           *ProvideInfo
-	As             []interface{}
-	Location       *digreflect.Func
-	Exported       bool
-	Callback       Callback
-	BeforeCallback BeforeCallback
+	Name            string
+	Group           string
+	Info            *ProvideInfo
+	As              []interface{}
+	Location        *digreflect.Func
+	Exported        bool
+	Callback        Callback
+	BeforeCallback  BeforeCallback
+	CleanupCallback CleanupCallback
 }
 
 func (o *provideOptions) Validate() error {
@@ -468,12 +469,13 @@ func (s *Scope) provide(ctor interface{}, opts provideOptions) (err error) {
 		s,
 		origScope,
 		constructorOptions{
-			ResultName:     opts.Name,
-			ResultGroup:    opts.Group,
-			ResultAs:       opts.As,
-			Location:       opts.Location,
-			Callback:       opts.Callback,
-			BeforeCallback: opts.BeforeCallback,
+			ResultName:      opts.Name,
+			ResultGroup:     opts.Group,
+			ResultAs:        opts.As,
+			Location:        opts.Location,
+			Callback:        opts.Callback,
+			BeforeCallback:  opts.BeforeCallback,
+			CleanupCallback: opts.CleanupCallback,
 		},
 	)
 	if err != nil {

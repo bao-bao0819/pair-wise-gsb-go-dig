@@ -101,6 +101,10 @@ func (s *Scope) Invoke(function interface{}, opts ...InvokeOption) (err error) {
 			fmt.Sprintf("can't invoke non-function %v (type %v)", function, ftype), nil)
 	}
 
+	if err := s.checkClosed(); err != nil {
+		return err
+	}
+
 	pl, err := newParamList(ftype, s)
 	if err != nil {
 		return err

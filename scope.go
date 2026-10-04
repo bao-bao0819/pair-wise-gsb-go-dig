@@ -93,6 +93,15 @@ type Scope struct {
 	// All the child scopes of this Scope.
 	childScopes []*Scope
 
+	// Cleanup callbacks registered by constructors owned by this Scope,
+	// in the order the constructors successfully completed.
+	cleanups []cleanupEntry
+
+	// Whether this Scope has been closed, and the result of the first
+	// Close call, reported again by subsequent calls.
+	closed   bool
+	closeErr error
+
 	// clockSrc stores the source of time. Defaults to system clock.
 	clockSrc digclock.Clock
 }

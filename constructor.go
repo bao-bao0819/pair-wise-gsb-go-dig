@@ -69,17 +69,23 @@ type constructorNode struct {
 
 	// BeforeCallback for this provided function, if there is one.
 	beforeCallback BeforeCallback
+
+	// CleanupCallback for this provided function, if there is one.
+	// It is registered with the Scope that owns this node after the
+	// constructor completes successfully.
+	cleanupCallback CleanupCallback
 }
 
 type constructorOptions struct {
 	// If specified, all values produced by this constructor have the provided name
 	// belong to the specified value group or implement any of the interfaces.
-	ResultName     string
-	ResultGroup    string
-	ResultAs       []interface{}
-	Location       *digreflect.Func
-	Callback       Callback
-	BeforeCallback BeforeCallback
+	ResultName      string
+	ResultGroup     string
+	ResultAs        []interface{}
+	Location        *digreflect.Func
+	Callback        Callback
+	BeforeCallback  BeforeCallback
+	CleanupCallback CleanupCallback
 }
 
 func newConstructorNode(ctor interface{}, s *Scope, origS *Scope, opts constructorOptions) (*constructorNode, error) {
@@ -110,17 +116,18 @@ func newConstructorNode(ctor interface{}, s *Scope, origS *Scope, opts construct
 	}
 
 	n := &constructorNode{
-		ctor:           ctor,
-		ctype:          ctype,
-		location:       location,
-		id:             dot.CtorID(cptr),
-		paramList:      params,
-		resultList:     results,
-		orders:         make(map[*Scope]int),
-		s:              s,
-		origS:          origS,
-		callback:       opts.Callback,
-		beforeCallback: opts.BeforeCallback,
+		ctor:            ctor,
+		ctype:           ctype,
+		location:        location,
+		id:              dot.CtorID(cptr),
+		paramList:       params,
+		resultList:      results,
+		orders:          make(map[*Scope]int),
+		s:               s,
+		origS:           origS,
+		callback:        opts.Callback,
+		beforeCallback:  opts.BeforeCallback,
+		cleanupCallback: opts.CleanupCallback,
 	}
 	s.newGraphNode(n, n.orders)
 	return n, nil
@@ -206,6 +213,15 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 	// container.
 	receiver.Commit(n.s)
 	n.called = true
+
+	// Register the cleanup callback only after the constructor has
+	// completed successfully and its results were committed. A failed
+	// constructor never reaches this point, and the called guard above
+	// ensures this runs at most once even if the constructor produced
+	// multiple values.
+	if n.cleanupCallback != nil {
+		n.s.addCleanup(n.location, n.cleanupCallback)
+	}
 	return nil
 }
 
