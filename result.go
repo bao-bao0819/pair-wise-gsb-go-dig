@@ -63,6 +63,11 @@ type resultOptions struct {
 	Name  string
 	Group string
 	As    []interface{}
+
+	// Member ordering metadata for the group named by Group.
+	Label  string
+	Before []string
+	After  []string
 }
 
 // newResult builds a result from the given type.
@@ -87,7 +92,23 @@ func newResult(t reflect.Type, opts resultOptions) (result, error) {
 			return nil, newErrInvalidInput(
 				fmt.Sprintf("cannot parse group %q", opts.Group), err)
 		}
-		rg := resultGrouped{Type: t, Group: g.Name, Flatten: g.Flatten}
+		if len(opts.Label) > 0 {
+			g.Label = opts.Label
+		}
+		g.Before = append(g.Before, opts.Before...)
+		g.After = append(g.After, opts.After...)
+		if g.Ordered {
+			return nil, newErrInvalidInput(fmt.Sprintf(
+				"cannot use ordered with result value groups: ordered was used with group:%q", g.Name), nil)
+		}
+		rg := resultGrouped{
+			Type:    t,
+			Group:   g.Name,
+			Flatten: g.Flatten,
+			Label:   g.Label,
+			Before:  g.Before,
+			After:   g.After,
+		}
 		if len(opts.As) > 0 {
 			var asTypes []reflect.Type
 			for _, as := range opts.As {
@@ -270,6 +291,16 @@ type resultSingle struct {
 	// If specified, this is a list of types which the value will be made
 	// available as, in addition to its own type.
 	As []reflect.Type
+
+	// Label optionally identifies this member so other members can place
+	// themselves before or after it. It is only meaningful when the group is
+	// consumed with the "ordered" option.
+	Label string
+
+	// Before and After hold labels of other members of the same group that
+	// this member must precede or follow.
+	Before []string
+	After  []string
 }
 
 func newResultSingle(t reflect.Type, opts resultOptions) (resultSingle, error) {
@@ -463,6 +494,16 @@ type resultGrouped struct {
 	// If specified, this is a list of types which the value will be made
 	// available as, in addition to its own type.
 	As []reflect.Type
+
+	// Label optionally identifies this member so other members can place
+	// themselves before or after it. It is only meaningful when the group is
+	// consumed with the "ordered" option.
+	Label string
+
+	// Before and After hold labels of other members of the same group that
+	// this member must precede or follow.
+	Before []string
+	After  []string
 }
 
 func (rt resultGrouped) DotResult() []*dot.Result {
@@ -492,10 +533,16 @@ func newResultGrouped(f reflect.StructField) (resultGrouped, error) {
 		Group:   g.Name,
 		Flatten: g.Flatten,
 		Type:    f.Type,
+		Label:   g.Label,
+		Before:  g.Before,
+		After:   g.After,
 	}
 	name := f.Tag.Get(_nameTag)
 	optional, _ := isFieldOptional(f)
 	switch {
+	case g.Ordered:
+		return rg, newErrInvalidInput(fmt.Sprintf(
+			"cannot use ordered with result value groups: ordered was used with group %q on field %q", rg.Group, f.Name), nil)
 	case g.Flatten && f.Type.Kind() != reflect.Slice:
 		return rg, newErrInvalidInput(fmt.Sprintf(
 			"flatten can be applied to slices only: field %q (%v) is not a slice", f.Name, f.Type), nil)
@@ -518,6 +565,7 @@ func newResultGrouped(f reflect.StructField) (resultGrouped, error) {
 func (rt resultGrouped) Extract(cw containerWriter, decorated bool, v reflect.Value) {
 	// Decorated values are always flattened.
 	if !decorated && !rt.Flatten {
+		rt.beginMember(cw)
 		cw.submitGroupedValue(rt.Group, rt.Type, v)
 		for _, asType := range rt.As {
 			cw.submitGroupedValue(rt.Group, asType, v)
@@ -529,7 +577,21 @@ func (rt resultGrouped) Extract(cw containerWriter, decorated bool, v reflect.Va
 		cw.submitDecoratedGroupedValue(rt.Group, rt.Type, v)
 		return
 	}
+	rt.beginMember(cw)
 	for i := 0; i < v.Len(); i++ {
 		cw.submitGroupedValue(rt.Group, rt.Type, v.Index(i))
+	}
+}
+
+// groupMemberTracker is implemented by container writers that need to know
+// which grouped result each submitted value belongs to. It is used when
+// building ordered value groups to keep flatten results contiguous.
+type groupMemberTracker interface {
+	beginGroupMember(group string, t reflect.Type, as []reflect.Type)
+}
+
+func (rt resultGrouped) beginMember(cw containerWriter) {
+	if tracker, ok := cw.(groupMemberTracker); ok {
+		tracker.beginGroupMember(rt.Group, rt.Type, rt.As)
 	}
 }

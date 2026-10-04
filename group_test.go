@@ -49,9 +49,64 @@ func TestParseGroup(t *testing.T) {
 			wantG: group{Name: "somegroup", Soft: true},
 		},
 		{
+			name:  "ordered group",
+			group: "somegroup,ordered",
+			wantG: group{Name: "somegroup", Ordered: true},
+		},
+		{
+			name:  "labeled member",
+			group: "somegroup,label=auth",
+			wantG: group{Name: "somegroup", Label: "auth"},
+		},
+		{
+			name:  "member with before/after constraints",
+			group: "somegroup,label=auth,before=audit,after=recover",
+			wantG: group{
+				Name:   "somegroup",
+				Label:  "auth",
+				Before: []string{"audit"},
+				After:  []string{"recover"},
+			},
+		},
+		{
+			name:  "multiple labels in one constraint",
+			group: "somegroup,before=audit;metrics",
+			wantG: group{Name: "somegroup", Before: []string{"audit", "metrics"}},
+		},
+		{
+			name:  "duplicate labels in one constraint are deduped",
+			group: "somegroup,before=audit;audit",
+			wantG: group{Name: "somegroup", Before: []string{"audit"}},
+		},
+		{
 			name:    "error",
 			group:   `somegroup,abc`,
 			wantErr: `invalid option "abc"`,
+		},
+		{
+			name:    "ordered with a value",
+			group:   "somegroup,ordered=true",
+			wantErr: `invalid option "ordered=true"`,
+		},
+		{
+			name:    "label without a value",
+			group:   "somegroup,label",
+			wantErr: `invalid value`,
+		},
+		{
+			name:    "empty label",
+			group:   "somegroup,label=",
+			wantErr: "label must not be empty",
+		},
+		{
+			name:    "invalid character in label",
+			group:   "somegroup,label=a=b",
+			wantErr: "label must not contain",
+		},
+		{
+			name:    "semicolon in single label",
+			group:   "somegroup,label=a;b",
+			wantErr: "label must not contain",
 		},
 	}
 	for _, tt := range tests {

@@ -503,6 +503,11 @@ type paramGroupedSlice struct {
 	// provide another value requested in the graph
 	Soft bool
 
+	// Ordered reports that the group was consumed with the "ordered" option.
+	// Ordered groups sort their members by member labels and before/after
+	// constraints instead of returning values in an unspecified order.
+	Ordered bool
+
 	orders map[*Scope]int
 }
 
@@ -532,15 +537,22 @@ func newParamGroupedSlice(f reflect.StructField, c containerStore) (paramGrouped
 		return paramGroupedSlice{}, err
 	}
 	pg := paramGroupedSlice{
-		Group:  g.Name,
-		Type:   f.Type,
-		orders: make(map[*Scope]int),
-		Soft:   g.Soft,
+		Group:   g.Name,
+		Type:    f.Type,
+		orders:  make(map[*Scope]int),
+		Soft:    g.Soft,
+		Ordered: g.Ordered,
 	}
 
 	name := f.Tag.Get(_nameTag)
 	optional, _ := isFieldOptional(f)
 	switch {
+	case g.Label != "":
+		return pg, newErrInvalidInput(fmt.Sprintf(
+			"member labels are not allowed when consuming value groups: label:%q specified with group %q on field %q", g.Label, pg.Group, f.Name), nil)
+	case len(g.Before) > 0 || len(g.After) > 0:
+		return pg, newErrInvalidInput(fmt.Sprintf(
+			"before/after constraints are not allowed when consuming value groups: group %q on field %q specifies a constraint", pg.Group, f.Name), nil)
 	case f.Type.Kind() != reflect.Slice:
 		return pg, newErrInvalidInput(
 			fmt.Sprintf("value groups may be consumed as slices only: field %q (%v) is not a slice", f.Name, f.Type), nil)
@@ -620,6 +632,10 @@ func (pt paramGroupedSlice) callGroupProviders(c containerStore) (int, error) {
 }
 
 func (pt paramGroupedSlice) Build(c containerStore) (reflect.Value, error) {
+	if pt.Ordered {
+		return pt.buildOrdered(c)
+	}
+
 	// do not call this if we are already inside a decorator since
 	// it will result in an infinite recursion. (i.e. decorate -> params.BuildList() -> Decorate -> params.BuildList...)
 	// this is safe since a value can be decorated at most once in a given scope.
@@ -647,6 +663,137 @@ func (pt paramGroupedSlice) Build(c containerStore) (reflect.Value, error) {
 	result := reflect.MakeSlice(pt.Type, 0, itemCount)
 	for _, c := range stores {
 		result = reflect.Append(result, c.getValueGroup(pt.Group, pt.Type.Elem())...)
+	}
+	return result, nil
+}
+
+// buildOrdered produces the group slice honoring member labels and before/after
+// constraints. All validation happens before any constructor is executed, so
+// that the consumer is never called on an invalid or cyclic ordering.
+func (pt paramGroupedSlice) buildOrdered(c containerStore) (reflect.Value, error) {
+	members := collectOrderedGroupMembers(pt, c)
+
+	// Validate and sort before running anything: unknown labels, duplicate
+	// labels and cycles prevent constructors and the final consumer from being
+	// invoked.
+	sorted, err := orderOrderedGroupMembers(pt, members)
+	if err != nil {
+		return _noValue, errParamGroupFailed{
+			CtorID: 0,
+			Key:    key{group: pt.Group, t: pt.Type.Elem()},
+			Reason: err,
+		}
+	}
+
+	// Decorators take precedence over raw providers, matching the behavior of
+	// ordinary value groups.
+	if err := pt.callGroupDecorators(c); err != nil {
+		return _noValue, err
+	}
+	if decoratedItems, ok := pt.getDecoratedValues(c); ok {
+		return decoratedItems, nil
+	}
+
+	// Snapshot values already submitted to each scope so that members of
+	// constructors invoked earlier as singletons can still be located.
+	pools := make(map[*Scope][]reflect.Value)
+	stores := c.storesToRoot()
+	for _, store := range stores {
+		s := store.(*Scope)
+		pools[s] = s.getSubmittedValueGroup(pt.Group, pt.Type.Elem())
+	}
+
+	// blocksByNode holds, for every constructor that gets executed while
+	// building this group, the contiguous blocks captured from its results in
+	// extraction order.
+	blocksByNode := make(map[*constructorNode][][]reflect.Value)
+	if !pt.Soft {
+		for _, m := range sorted {
+			if m.node.called {
+				continue
+			}
+			collector := newOrderedGroupCollector(m.node.s, pt.Group, pt.Type.Elem())
+			if err := m.node.run(c, collector); err != nil {
+				return _noValue, errParamGroupFailed{
+					CtorID: m.node.ID(),
+					Key:    key{group: pt.Group, t: pt.Type.Elem()},
+					Reason: err,
+				}
+			}
+			blocksByNode[m.node] = collector.finish()
+			m.node.called = true
+
+			// Running this constructor may also have executed group
+			// providers it depends on. Refresh the pool snapshots so values
+			// of members that became "already called" remain discoverable.
+			for _, store := range stores {
+				s := store.(*Scope)
+				pools[s] = s.getSubmittedValueGroup(pt.Group, pt.Type.Elem())
+			}
+		}
+	}
+
+	// Assemble the final slice in the sorted order. Values of constructors
+	// executed earlier are taken from the per-scope pools in registration
+	// order, which matches the stable ordering of the member collection.
+	poolIndex := make(map[*Scope]int)
+
+	// Count pool-backed (uncaptured) members per scope so that values of a
+	// pre-called flattened slice can be divided without stealing values that
+	// belong to a later member.
+	poolMembers := make(map[*Scope]int)
+	poolFlat := make(map[*Scope]int)
+	for _, m := range sorted {
+		if blocks, ok := blocksByNode[m.node]; ok && m.block < len(blocks) {
+			continue
+		}
+		poolMembers[m.scope]++
+		if m.result.Flatten {
+			poolFlat[m.scope]++
+		}
+	}
+
+	result := reflect.MakeSlice(pt.Type, 0, len(sorted))
+	for _, m := range sorted {
+		var block []reflect.Value
+		if blocks, ok := blocksByNode[m.node]; ok && m.block < len(blocks) {
+			block = blocks[m.block]
+		} else {
+			// Constructor was already called for another dependency (or the
+			// group is soft); take its values from the scope pool.
+			s := m.scope
+			pool := pools[s]
+			start := poolIndex[s]
+			// Reserve one value for each remaining non-flatten member. The
+			// rest of the pool belongs to flatten members; if this is the
+			// only flatten member left, it gets all of them, otherwise the
+			// division is arbitrary but every value is included exactly once.
+			count := 1
+			if m.result.Flatten {
+				otherSingles := poolMembers[s] - poolFlat[s]
+				available := len(pool) - start - otherSingles
+				if available < 0 {
+					available = 0
+				}
+				if poolFlat[s] <= 1 {
+					count = available
+				} else {
+					count = available / poolFlat[s]
+				}
+			}
+			if count > len(pool)-start {
+				count = len(pool) - start
+			}
+			block = pool[start : start+count]
+			poolIndex[s] = start + count
+			poolMembers[s]--
+			if m.result.Flatten {
+				poolFlat[s]--
+			}
+		}
+		for _, v := range block {
+			result = reflect.Append(result, v)
+		}
 	}
 	return result, nil
 }

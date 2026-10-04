@@ -5,7 +5,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+### Added
+- Value groups may now be consumed in a declared order with the
+  `group:"name,ordered"` tag on the consuming slice. Ordered groups support
+  optional member labels (`label=<name>`) and ordering constraints
+  (`before=<labels>` / `after=<labels>`, multiple labels separated by `;`) on
+  producers. Constraints are resolved by label across a Scope and its
+  ancestors, flatten results stay contiguous, unconstrained members keep
+  stable registration order, and unknown labels, duplicate labels, and cycles
+  are reported without invoking the consumer. Constructors that do not use
+  result objects can use the new `MemberLabel`, `MemberBefore`, and
+  `MemberAfter` Provide options.
 
 ## [1.19.0] - 2025-05-13
 

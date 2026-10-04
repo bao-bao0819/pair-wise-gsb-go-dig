@@ -208,6 +208,14 @@ func (s *Scope) getValueGroup(name string, t reflect.Type) []reflect.Value {
 	return shuffledCopy(s.rand, items)
 }
 
+// getSubmittedValueGroup returns the values submitted directly to a group in
+// this scope, in the order they were submitted. Unlike getValueGroup, the
+// returned order is not randomized; callers must not rely on it for ordinary
+// value groups.
+func (s *Scope) getSubmittedValueGroup(name string, t reflect.Type) []reflect.Value {
+	return s.groups[key{group: name, t: t}]
+}
+
 func (s *Scope) getDecoratedValueGroup(name string, t reflect.Type) (reflect.Value, bool) {
 	items, ok := s.decoratedGroups[key{group: name, t: t}]
 	return items, ok

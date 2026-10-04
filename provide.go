@@ -45,6 +45,9 @@ type provideOptions struct {
 	Exported       bool
 	Callback       Callback
 	BeforeCallback BeforeCallback
+	GroupLabel     string
+	GroupBefore    []string
+	GroupAfter     []string
 }
 
 func (o *provideOptions) Validate() error {
@@ -53,6 +56,10 @@ func (o *provideOptions) Validate() error {
 			return newErrInvalidInput(
 				fmt.Sprintf("cannot use named values with value groups: name:%q provided with group:%q", o.Name, o.Group), nil)
 		}
+	}
+	if len(o.Group) == 0 && (len(o.GroupLabel) > 0 || len(o.GroupBefore) > 0 || len(o.GroupAfter) > 0) {
+		return newErrInvalidInput(
+			"member ordering options require dig.Group(...)", nil)
 	}
 
 	// Names must be representable inside a backquoted string. The only
@@ -138,6 +145,68 @@ func (o provideGroupOption) String() string {
 
 func (o provideGroupOption) applyProvideOption(opt *provideOptions) {
 	opt.Group = string(o)
+}
+
+// MemberLabel is a ProvideOption that labels the value group member produced
+// by a constructor. Other members of the same group may refer to this label
+// from [MemberBefore] and [MemberAfter] constraints.
+//
+// Labels are only consulted when the group is consumed in declaration order
+// with the `group:"name,ordered"` tag; ordinary value groups remain unordered.
+//
+// MemberLabel requires [Group] and cannot be used with constructors that
+// produce result objects. To label a field of a dig.Out struct, use the
+// `group:"name,label=foo"` tag instead.
+func MemberLabel(label string) ProvideOption {
+	return memberLabelOption(label)
+}
+
+type memberLabelOption string
+
+func (o memberLabelOption) String() string {
+	return fmt.Sprintf("MemberLabel(%q)", string(o))
+}
+
+func (o memberLabelOption) applyProvideOption(opt *provideOptions) {
+	opt.GroupLabel = string(o)
+}
+
+// MemberBefore is a ProvideOption that declares the value group member
+// produced by a constructor must appear before every member carrying one of
+// the given labels in an ordered value group.
+//
+// Constraints are resolved by label; see [MemberLabel].
+func MemberBefore(labels ...string) ProvideOption {
+	return memberBeforeOption(labels)
+}
+
+type memberBeforeOption []string
+
+func (o memberBeforeOption) String() string {
+	return fmt.Sprintf("MemberBefore(%q)", []string(o))
+}
+
+func (o memberBeforeOption) applyProvideOption(opt *provideOptions) {
+	opt.GroupBefore = append(opt.GroupBefore, o...)
+}
+
+// MemberAfter is a ProvideOption that declares the value group member
+// produced by a constructor must appear after every member carrying one of
+// the given labels in an ordered value group.
+//
+// Constraints are resolved by label; see [MemberLabel].
+func MemberAfter(labels ...string) ProvideOption {
+	return memberAfterOption(labels)
+}
+
+type memberAfterOption []string
+
+func (o memberAfterOption) String() string {
+	return fmt.Sprintf("MemberAfter(%q)", []string(o))
+}
+
+func (o memberAfterOption) applyProvideOption(opt *provideOptions) {
+	opt.GroupAfter = append(opt.GroupAfter, o...)
 }
 
 // ID is a unique integer representing the constructor node in the dependency graph.
@@ -471,6 +540,9 @@ func (s *Scope) provide(ctor interface{}, opts provideOptions) (err error) {
 			ResultName:     opts.Name,
 			ResultGroup:    opts.Group,
 			ResultAs:       opts.As,
+			ResultLabel:    opts.GroupLabel,
+			ResultBefore:   opts.GroupBefore,
+			ResultAfter:    opts.GroupAfter,
 			Location:       opts.Location,
 			Callback:       opts.Callback,
 			BeforeCallback: opts.BeforeCallback,

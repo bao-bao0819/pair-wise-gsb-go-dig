@@ -77,6 +77,9 @@ type constructorOptions struct {
 	ResultName     string
 	ResultGroup    string
 	ResultAs       []interface{}
+	ResultLabel    string
+	ResultBefore   []string
+	ResultAfter    []string
 	Location       *digreflect.Func
 	Callback       Callback
 	BeforeCallback BeforeCallback
@@ -95,9 +98,12 @@ func newConstructorNode(ctor interface{}, s *Scope, origS *Scope, opts construct
 	results, err := newResultList(
 		ctype,
 		resultOptions{
-			Name:  opts.ResultName,
-			Group: opts.ResultGroup,
-			As:    opts.ResultAs,
+			Name:   opts.ResultName,
+			Group:  opts.ResultGroup,
+			As:     opts.ResultAs,
+			Label:  opts.ResultLabel,
+			Before: opts.ResultBefore,
+			After:  opts.ResultAfter,
 		},
 	)
 	if err != nil {
@@ -150,7 +156,23 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 		return nil
 	}
 
-	if err := shallowCheckDependencies(c, n.paramList); err != nil {
+	if err = n.run(c, nil); err != nil {
+		return err
+	}
+	n.called = true
+	return nil
+}
+
+// run executes the constructor, submitting its results to the provided
+// containerWriter. If cw is nil, results are staged and committed to the
+// Scope this constructor was provided to; otherwise they are submitted to
+// cw directly and are not committed to the Scope.
+//
+// Unlike Call, run does not consult or set the called flag, allowing ordered
+// value groups to execute constructors and capture their grouped values
+// without relying on the storage order of the target Scope.
+func (n *constructorNode) run(c containerStore, cw containerWriter) (err error) {
+	if err = shallowCheckDependencies(c, n.paramList); err != nil {
 		return errMissingDependencies{
 			Func:   n.location,
 			Reason: err,
@@ -200,12 +222,15 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 		return errConstructorFailed{Func: n.location, Reason: err}
 	}
 
-	// Commit the result to the original container that this constructor
-	// was supplied to. The provided constructor is only used for a view of
-	// the rest of the graph to instantiate the dependencies of this
-	// container.
-	receiver.Commit(n.s)
-	n.called = true
+	if cw == nil {
+		// Commit the result to the original container that this constructor
+		// was supplied to. The provided constructor is only used for a view of
+		// the rest of the graph to instantiate the dependencies of this
+		// container.
+		receiver.Commit(n.s)
+		return nil
+	}
+	receiver.Commit(cw)
 	return nil
 }
 
@@ -253,4 +278,77 @@ func (sr *stagingContainerWriter) Commit(cw containerWriter) {
 			cw.submitGroupedValue(k.group, k.t, v)
 		}
 	}
+}
+
+// orderedGroupCollector captures the grouped values of a single constructor
+// call while still committing every produced value to the owning Scope.
+// Grouped values submitted for the consumed (group, element) pair are grouped
+// into contiguous member blocks, preserving the order of flatten results.
+type orderedGroupCollector struct {
+	scope   containerWriter
+	group   string
+	elem    reflect.Type
+	blocks  [][]reflect.Value
+	current []reflect.Value
+	started bool
+}
+
+var (
+	_ containerWriter    = (*orderedGroupCollector)(nil)
+	_ groupMemberTracker = (*orderedGroupCollector)(nil)
+)
+
+func newOrderedGroupCollector(scope containerWriter, group string, elem reflect.Type) *orderedGroupCollector {
+	return &orderedGroupCollector{scope: scope, group: group, elem: elem}
+}
+
+func (c *orderedGroupCollector) setValue(name string, t reflect.Type, v reflect.Value) {
+	c.scope.setValue(name, t, v)
+}
+
+func (c *orderedGroupCollector) setDecoratedValue(name string, t reflect.Type, v reflect.Value) {
+	digerror.BugPanicf("orderedGroupCollector.setDecoratedValue must never be called")
+}
+
+// beginGroupMember is called right before a resultGrouped result submits its
+// values. Submissions for the consumed (group, element) pair following this
+// call form one contiguous block.
+func (c *orderedGroupCollector) beginGroupMember(group string, t reflect.Type, as []reflect.Type) {
+	if c.started {
+		c.blocks = append(c.blocks, c.current)
+	}
+	c.current = nil
+	// Only count blocks contributed by results of the consumed group and
+	// element type.
+	target := t == c.elem
+	if !target {
+		for _, asType := range as {
+			if asType == c.elem {
+				target = true
+				break
+			}
+		}
+	}
+	c.started = group == c.group && target
+}
+
+func (c *orderedGroupCollector) submitGroupedValue(group string, t reflect.Type, v reflect.Value) {
+	c.scope.submitGroupedValue(group, t, v)
+	if group == c.group && t == c.elem {
+		c.current = append(c.current, v)
+	}
+}
+
+func (c *orderedGroupCollector) submitDecoratedGroupedValue(_ string, _ reflect.Type, _ reflect.Value) {
+	digerror.BugPanicf("orderedGroupCollector.submitDecoratedGroupedValue must never be called")
+}
+
+// finish returns the captured member blocks, one entry per resultGrouped that
+// contributed values of the consumed element type, including empty blocks for
+// flattened slices with zero elements.
+func (c *orderedGroupCollector) finish() [][]reflect.Value {
+	blocks := make([][]reflect.Value, len(c.blocks)+1)
+	copy(blocks, c.blocks)
+	blocks[len(c.blocks)] = c.current
+	return blocks
 }

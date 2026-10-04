@@ -345,4 +345,63 @@
 //	  Handler []int `group:"server"`         // [][]int from dig.In
 //	  Handler []int `group:"server,flatten"` // []int from dig.In
 //	}
+//
+// # Ordered Value Groups
+//
+// Ordinary value groups are unordered. When a value group must be consumed in
+// a specific order, tag the consuming slice with the "ordered" option:
+//
+//	type ServerParams struct {
+//	  dig.In
+//
+//	  Handlers []Handler `group:"server,ordered"`
+//	}
+//
+// Only slices consumed this way participate in ordering; value groups
+// consumed with the plain `group:"server"` tag remain unordered regardless of
+// the tags used by their producers.
+//
+// Producers may give their member an optional label with the "label" option
+// and constrain it relative to other members with "before" and "after":
+//
+//	type RecoverResult struct {
+//	  dig.Out
+//
+//	  Handler Handler `group:"server,label=recover"`
+//	}
+//
+//	type AuthResult struct {
+//	  dig.Out
+//
+//	  Handler Handler `group:"server,label=auth,after=recover,before=audit"`
+//	}
+//
+//	type AuditResult struct {
+//	  dig.Out
+//
+//	  Handler Handler `group:"server,label=audit,after=auth"`
+//	}
+//
+// Constraints reference members by label, not by the producing constructor.
+// Multiple labels may be given in a single constraint separated by ';'. A
+// constructor that returns a flattened slice keeps the elements of that slice
+// contiguous and in the slice's own order, as a single labeled block; an
+// empty flattened slice contributes no values but still participates in
+// ordering validation.
+//
+// Members with no constraint relationship keep a stable position relative to
+// each other: they follow the order in which their constructors were
+// Provided, with members of a child Scope appearing before members of its
+// ancestors. Shuffling registration order never changes the relative order of
+// members linked by before/after constraints.
+//
+// Labels must be unique among all members visible to the consuming Scope
+// (the Scope and its ancestors); duplicate labels, references to unknown
+// labels, and directed cycles are errors returned when the ordered group is
+// built, in which case the consuming function is not invoked. Members without
+// a label cannot be referenced by before/after constraints.
+//
+// Labels and constraints may also be declared on constructors that do not use
+// result objects with the [Group], [MemberLabel], [MemberBefore] and
+// [MemberAfter] options.
 package dig // import "go.uber.org/dig"
