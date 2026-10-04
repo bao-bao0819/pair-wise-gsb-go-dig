@@ -498,6 +498,16 @@ type paramGroupedSlice struct {
 	// Type of the slice.
 	Type reflect.Type
 
+	// Ordered requests that the collected slice honor member tags and the
+	// Before/After constraints. Only consumers that explicitly opt in get
+	// this behavior; ordinary consumers keep the unordered contract.
+	Ordered bool
+
+	// Before/After ordering constraints between member tags, normalized to
+	// "from" -> "to" edges meaning "from before to".
+	Before []orderEdge
+	After  []orderEdge
+
 	// Soft is used to denote a soft dependency between this param and its
 	// constructors, if it's true its constructors are only called if they
 	// provide another value requested in the graph
@@ -532,14 +542,18 @@ func newParamGroupedSlice(f reflect.StructField, c containerStore) (paramGrouped
 		return paramGroupedSlice{}, err
 	}
 	pg := paramGroupedSlice{
-		Group:  g.Name,
-		Type:   f.Type,
-		orders: make(map[*Scope]int),
-		Soft:   g.Soft,
+		Group:   g.Name,
+		Type:    f.Type,
+		orders:  make(map[*Scope]int),
+		Soft:    g.Soft,
+		Ordered: g.Ordered,
 	}
 
 	name := f.Tag.Get(_nameTag)
 	optional, _ := isFieldOptional(f)
+	beforeTag := f.Tag.Get(_groupBeforeTag)
+	afterTag := f.Tag.Get(_groupAfterTag)
+	memberTag := f.Tag.Get(_groupTagTag)
 	switch {
 	case f.Type.Kind() != reflect.Slice:
 		return pg, newErrInvalidInput(
@@ -547,11 +561,36 @@ func newParamGroupedSlice(f reflect.StructField, c containerStore) (paramGrouped
 	case g.Flatten:
 		return pg, newErrInvalidInput(
 			fmt.Sprintf("cannot use flatten in parameter value groups: field %q (%v) specifies flatten", f.Name, f.Type), nil)
+	case g.Soft && g.Ordered:
+		return pg, newErrInvalidInput(
+			fmt.Sprintf("cannot use soft with ordered value groups: field %q (%v) specifies both", f.Name, f.Type), nil)
+	case (beforeTag != "" || afterTag != "") && !g.Ordered:
+		return pg, newErrInvalidInput(
+			fmt.Sprintf("before/after constraints require an ordered value group: field %q (%v) is not ordered, add the %q modifier to its group tag", f.Name, f.Type, "ordered"), nil)
+	case memberTag != "":
+		return pg, newErrInvalidInput(
+			fmt.Sprintf("cannot use %q on a value-group consumer: field %q (%v) should tag the producer instead", _groupTagTag, f.Name, f.Type), nil)
 	case name != "":
 		return pg, newErrInvalidInput(
 			fmt.Sprintf("cannot use named values with value groups: name:%q requested with group:%q", name, pg.Group), nil)
 	case optional:
 		return pg, newErrInvalidInput("value groups cannot be optional", nil)
+	}
+	if beforeTag != "" {
+		edges, err := parseOrderEdges(beforeTag, true)
+		if err != nil {
+			return pg, newErrInvalidInput(
+				fmt.Sprintf("invalid %q tag on field %q", _groupBeforeTag, f.Name), err)
+		}
+		pg.Before = edges
+	}
+	if afterTag != "" {
+		edges, err := parseOrderEdges(afterTag, false)
+		if err != nil {
+			return pg, newErrInvalidInput(
+				fmt.Sprintf("invalid %q tag on field %q", _groupAfterTag, f.Name), err)
+		}
+		pg.After = edges
 	}
 	c.newGraphNode(&pg, pg.orders)
 	return pg, nil
@@ -619,6 +658,74 @@ func (pt paramGroupedSlice) callGroupProviders(c containerStore) (int, error) {
 	return itemCount, nil
 }
 
+// callOrderedGroupProviders calls every provider that contributes to the
+// group across the effective scope chain, in root-to-scope order.
+func (pt paramGroupedSlice) callOrderedGroupProviders(c containerStore) error {
+	stores := c.storesToRoot()
+	for i := len(stores) - 1; i >= 0; i-- {
+		s := stores[i]
+		providers := s.getGroupProviders(pt.Group, pt.Type.Elem())
+		for _, p := range providers {
+			n, ok := p.(*constructorNode)
+			if !ok {
+				continue
+			}
+			if err := n.Call(n.OrigScope()); err != nil {
+				return errParamGroupFailed{
+					CtorID: n.ID(),
+					Key:    key{group: pt.Group, t: pt.Type.Elem()},
+					Reason: err,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// buildOrdered collects a value group for a consumer that explicitly opted
+// into ordering. Ordering constraints are validated against member tags
+// before any constructor is invoked, so that an invalid graph never calls
+// the final consumer (nor any group producer).
+func (pt paramGroupedSlice) buildOrdered(c containerStore) (reflect.Value, error) {
+	groupKey := key{group: pt.Group, t: pt.Type.Elem()}
+
+	blocks := planOrderedGroup(groupKey, c)
+
+	// Combine before/after edges; both were normalized to "from before to".
+	edges := make([]orderEdge, 0, len(pt.Before)+len(pt.After))
+	edges = append(edges, pt.Before...)
+	edges = append(edges, pt.After...)
+
+	// Validate and sort before calling producers so member-level errors do
+	// not trigger constructors or the final consumer.
+	ordered, err := sortOrderedBlocks(pt.Group, blocks, edges)
+	if err != nil {
+		return _noValue, errParamGroupFailed{
+			CtorID: 0,
+			Key:    groupKey,
+			Reason: err,
+		}
+	}
+
+	if err := pt.callOrderedGroupProviders(c); err != nil {
+		return _noValue, err
+	}
+
+	fillOrderedBlockValues(ordered, groupKey)
+
+	itemCount := 0
+	for _, b := range ordered {
+		itemCount += len(b.values)
+	}
+	result := reflect.MakeSlice(pt.Type, 0, itemCount)
+	for _, b := range ordered {
+		for _, v := range b.values {
+			result = reflect.Append(result, v)
+		}
+	}
+	return result, nil
+}
+
 func (pt paramGroupedSlice) Build(c containerStore) (reflect.Value, error) {
 	// do not call this if we are already inside a decorator since
 	// it will result in an infinite recursion. (i.e. decorate -> params.BuildList() -> Decorate -> params.BuildList...)
@@ -630,6 +737,10 @@ func (pt paramGroupedSlice) Build(c containerStore) (reflect.Value, error) {
 	// Check if we have decorated values
 	if decoratedItems, ok := pt.getDecoratedValues(c); ok {
 		return decoratedItems, nil
+	}
+
+	if pt.Ordered {
+		return pt.buildOrdered(c)
 	}
 
 	// If we do not have any decorated values and the group isn't soft,

@@ -5,7 +5,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+### Added
+- Value groups support optional member tags and before/after ordering
+  constraints. A consuming slice opts in with the `ordered` group modifier
+  and declares relations via the `groupbefore`/`groupafter` tags; producers
+  name members with the `grouptag` tag or the `GroupMemberTag` option.
+  Unordered consumers are unaffected and retain the existing unordered
+  contract.
 
 ## [1.19.0] - 2025-05-13
 

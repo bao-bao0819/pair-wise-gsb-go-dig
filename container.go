@@ -83,7 +83,15 @@ type containerWriter interface {
 
 	// submitGroupedValue submits a value to the value group with the provided
 	// name.
-	submitGroupedValue(name string, t reflect.Type, v reflect.Value)
+	//
+	// tag optionally names the member for ordered consumers and values holds
+	// one or more values produced together (a flatten output contributes many).
+	submitGroupedBlock(name string, t reflect.Type, tag string, values []reflect.Value)
+
+	// submitGroupedValueAs submits the same values to the group under an
+	// additional element type (dig.As). It does not introduce a new member or
+	// a new ordering block.
+	submitGroupedValueAs(name string, t reflect.Type, values []reflect.Value)
 
 	// submitDecoratedGroupedValue submits a decorated value to the value group
 	// with the provided name.

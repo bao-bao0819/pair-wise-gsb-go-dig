@@ -64,6 +64,11 @@ type constructorNode struct {
 	// This is different from s if and only if the constructor was Provided with ExportOption.
 	origS *Scope
 
+	// Contiguous blocks produced by this constructor for each value group,
+	// populated when the node is called. Used by ordered value-group
+	// consumers; ordinary consumers read from the Scope's group storage.
+	groupResults map[key][]groupBlock
+
 	// Callback for this provided function, if there is one.
 	callback Callback
 
@@ -76,6 +81,7 @@ type constructorOptions struct {
 	// belong to the specified value group or implement any of the interfaces.
 	ResultName     string
 	ResultGroup    string
+	ResultGroupTag string
 	ResultAs       []interface{}
 	Location       *digreflect.Func
 	Callback       Callback
@@ -95,9 +101,10 @@ func newConstructorNode(ctor interface{}, s *Scope, origS *Scope, opts construct
 	results, err := newResultList(
 		ctype,
 		resultOptions{
-			Name:  opts.ResultName,
-			Group: opts.ResultGroup,
-			As:    opts.ResultAs,
+			Name:     opts.ResultName,
+			Group:    opts.ResultGroup,
+			GroupTag: opts.ResultGroupTag,
+			As:       opts.ResultAs,
 		},
 	)
 	if err != nil {
@@ -195,6 +202,7 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 	}
 
 	receiver := newStagingContainerWriter()
+	receiver.node = n
 	results := c.invoker()(reflect.ValueOf(n.ctor), args)
 	if err = n.resultList.ExtractList(receiver, false /* decorating */, results); err != nil {
 		return errConstructorFailed{Func: n.location, Reason: err}
@@ -205,6 +213,7 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 	// the rest of the graph to instantiate the dependencies of this
 	// container.
 	receiver.Commit(n.s)
+	receiver.commitGroupResults()
 	n.called = true
 	return nil
 }
@@ -214,14 +223,38 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 type stagingContainerWriter struct {
 	values map[key]reflect.Value
 	groups map[key][]reflect.Value
+
+	// groupBlocks records, per group/element-type key, the contiguous blocks
+	// produced by this constructor in result-extraction order. It drives
+	// ordered value-group consumers.
+	groupBlocks map[key][]groupBlock
+
+	// blockSeq is a constructor-wide counter identifying every grouped
+	// result in extraction order, across all element types and groups. It
+	// aligns the static plan with values captured after the call.
+	blockSeq int
+
+	// node is the constructor whose results this writer is staging.
+	node *constructorNode
+}
+
+// groupBlock is one contiguous contribution to a value group made by a
+// constructor: a single non-flattened member, or all elements of one
+// flattened slice. Tag is the declared member tag (possibly empty), and Seq
+// is the constructor-wide index of the originating grouped result.
+type groupBlock struct {
+	Tag    string
+	Seq    int
+	Values []reflect.Value
 }
 
 var _ containerWriter = (*stagingContainerWriter)(nil)
 
 func newStagingContainerWriter() *stagingContainerWriter {
 	return &stagingContainerWriter{
-		values: make(map[key]reflect.Value),
-		groups: make(map[key][]reflect.Value),
+		values:      make(map[key]reflect.Value),
+		groups:      make(map[key][]reflect.Value),
+		groupBlocks: make(map[key][]groupBlock),
 	}
 }
 
@@ -233,9 +266,20 @@ func (sr *stagingContainerWriter) setDecoratedValue(_ string, _ reflect.Type, _ 
 	digerror.BugPanicf("stagingContainerWriter.setDecoratedValue must never be called")
 }
 
-func (sr *stagingContainerWriter) submitGroupedValue(group string, t reflect.Type, v reflect.Value) {
+func (sr *stagingContainerWriter) submitGroupedBlock(group string, t reflect.Type, tag string, values []reflect.Value) {
 	k := key{t: t, group: group}
-	sr.groups[k] = append(sr.groups[k], v)
+	sr.groups[k] = append(sr.groups[k], values...)
+	sr.groupBlocks[k] = append(sr.groupBlocks[k], groupBlock{Tag: tag, Seq: sr.blockSeq, Values: values})
+	sr.blockSeq++
+}
+
+func (sr *stagingContainerWriter) submitGroupedValueAs(group string, t reflect.Type, values []reflect.Value) {
+	k := key{t: t, group: group}
+	sr.groups[k] = append(sr.groups[k], values...)
+	// The alternate (dig.As) element type shares the member's seq via the
+	// originating grouped result; ordered consumers discover it through the
+	// static plan and read values from the primary type's block, so only the
+	// unordered storage needs an entry here.
 }
 
 func (sr *stagingContainerWriter) submitDecoratedGroupedValue(_ string, _ reflect.Type, _ reflect.Value) {
@@ -250,7 +294,21 @@ func (sr *stagingContainerWriter) Commit(cw containerWriter) {
 
 	for k, vs := range sr.groups {
 		for _, v := range vs {
-			cw.submitGroupedValue(k.group, k.t, v)
+			cw.submitGroupedBlock(k.group, k.t, "", []reflect.Value{v})
 		}
+	}
+}
+
+// commitGroupResults stores the blocks produced by this constructor on the
+// constructor node for ordered value-group consumers.
+func (sr *stagingContainerWriter) commitGroupResults() {
+	if sr.node == nil {
+		return
+	}
+	if sr.node.groupResults == nil {
+		sr.node.groupResults = make(map[key][]groupBlock)
+	}
+	for k, blocks := range sr.groupBlocks {
+		sr.node.groupResults[k] = append(sr.node.groupResults[k], blocks...)
 	}
 }

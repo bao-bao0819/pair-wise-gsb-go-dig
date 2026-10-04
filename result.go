@@ -60,9 +60,16 @@ type resultOptions struct {
 	// If set, this is the name of the associated result value.
 	//
 	// For Result Objects, name:".." tags on fields override this.
-	Name  string
+	Name string
+
+	// Group is the raw value of the group option/tag, possibly containing
+	// modifiers such as flatten.
 	Group string
-	As    []interface{}
+
+	// GroupTag names the produced value-group member for ordered consumers.
+	GroupTag string
+
+	As []interface{}
 }
 
 // newResult builds a result from the given type.
@@ -87,7 +94,10 @@ func newResult(t reflect.Type, opts resultOptions) (result, error) {
 			return nil, newErrInvalidInput(
 				fmt.Sprintf("cannot parse group %q", opts.Group), err)
 		}
-		rg := resultGrouped{Type: t, Group: g.Name, Flatten: g.Flatten}
+		if err := validateGroupTag(opts.GroupTag); err != nil {
+			return nil, err
+		}
+		rg := resultGrouped{Type: t, Group: g.Name, Flatten: g.Flatten, Tag: opts.GroupTag}
 		if len(opts.As) > 0 {
 			var asTypes []reflect.Type
 			for _, as := range opts.As {
@@ -109,6 +119,10 @@ func newResult(t reflect.Type, opts resultOptions) (result, error) {
 		if g.Soft {
 			return nil, newErrInvalidInput(fmt.Sprintf(
 				"cannot use soft with result value groups: soft was used with group:%q", g.Name), nil)
+		}
+		if g.Ordered {
+			return nil, newErrInvalidInput(fmt.Sprintf(
+				"cannot use ordered with result value groups: ordered was used with group:%q", g.Name), nil)
 		}
 		if g.Flatten {
 			if t.Kind() != reflect.Slice {
@@ -460,6 +474,11 @@ type resultGrouped struct {
 	// the type of individual elements rather than the group.
 	Flatten bool
 
+	// Tag optionally names the member, or the contiguous block of members
+	// produced when Flatten is set, so that ordered value-group consumers can
+	// reference it in before/after constraints. Empty for untagged members.
+	Tag string
+
 	// If specified, this is a list of types which the value will be made
 	// available as, in addition to its own type.
 	As []reflect.Type
@@ -491,22 +510,32 @@ func newResultGrouped(f reflect.StructField) (resultGrouped, error) {
 	rg := resultGrouped{
 		Group:   g.Name,
 		Flatten: g.Flatten,
+		Tag:     f.Tag.Get(_groupTagTag),
 		Type:    f.Type,
 	}
 	name := f.Tag.Get(_nameTag)
 	optional, _ := isFieldOptional(f)
 	switch {
+	case g.Ordered:
+		return rg, newErrInvalidInput(fmt.Sprintf(
+			"cannot use ordered in result value groups: ordered was used with group %q", rg.Group), nil)
 	case g.Flatten && f.Type.Kind() != reflect.Slice:
 		return rg, newErrInvalidInput(fmt.Sprintf(
 			"flatten can be applied to slices only: field %q (%v) is not a slice", f.Name, f.Type), nil)
 	case g.Soft:
 		return rg, newErrInvalidInput(fmt.Sprintf(
 			"cannot use soft with result value groups: soft was used with group %q", rg.Group), nil)
+	case f.Tag.Get(_groupBeforeTag) != "" || f.Tag.Get(_groupAfterTag) != "":
+		return rg, newErrInvalidInput(fmt.Sprintf(
+			"cannot declare ordering constraints on result value group field %q: before/after constraints belong on the consuming slice", f.Name), nil)
 	case name != "":
 		return rg, newErrInvalidInput(fmt.Sprintf(
 			"cannot use named values with value groups: name:%q provided with group:%q", name, rg.Group), nil)
 	case optional:
 		return rg, newErrInvalidInput("value groups cannot be optional", nil)
+	}
+	if err := validateGroupTag(rg.Tag); err != nil {
+		return rg, err
 	}
 	if g.Flatten {
 		rg.Type = f.Type.Elem()
@@ -517,19 +546,23 @@ func newResultGrouped(f reflect.StructField) (resultGrouped, error) {
 
 func (rt resultGrouped) Extract(cw containerWriter, decorated bool, v reflect.Value) {
 	// Decorated values are always flattened.
-	if !decorated && !rt.Flatten {
-		cw.submitGroupedValue(rt.Group, rt.Type, v)
-		for _, asType := range rt.As {
-			cw.submitGroupedValue(rt.Group, asType, v)
-		}
-		return
-	}
-
 	if decorated {
 		cw.submitDecoratedGroupedValue(rt.Group, rt.Type, v)
 		return
 	}
-	for i := 0; i < v.Len(); i++ {
-		cw.submitGroupedValue(rt.Group, rt.Type, v.Index(i))
+	if !rt.Flatten {
+		cw.submitGroupedBlock(rt.Group, rt.Type, rt.Tag, []reflect.Value{v})
+		for _, asType := range rt.As {
+			cw.submitGroupedValueAs(rt.Group, asType, []reflect.Value{v})
+		}
+		return
 	}
+	values := make([]reflect.Value, v.Len())
+	for i := 0; i < v.Len(); i++ {
+		values[i] = v.Index(i)
+	}
+	// Flattened output is submitted as a single contiguous block carrying the
+	// declared tag (which may be empty). Empty slices submit an empty block so
+	// that the tag is still visible to ordered consumers.
+	cw.submitGroupedBlock(rt.Group, rt.Type, rt.Tag, values)
 }

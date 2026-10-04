@@ -39,6 +39,7 @@ type ProvideOption interface {
 type provideOptions struct {
 	Name           string
 	Group          string
+	GroupTag       string
 	Info           *ProvideInfo
 	As             []interface{}
 	Location       *digreflect.Func
@@ -66,6 +67,13 @@ func (o *provideOptions) Validate() error {
 	if strings.ContainsRune(o.Group, '`') {
 		return newErrInvalidInput(
 			fmt.Sprintf("invalid dig.Group(%q): group names cannot contain backquotes", o.Group), nil)
+	}
+	if len(o.GroupTag) > 0 && len(o.Group) == 0 {
+		return newErrInvalidInput(
+			fmt.Sprintf("invalid dig.GroupMemberTag(%q): it must be used together with dig.Group", o.GroupTag), nil)
+	}
+	if err := validateGroupTag(o.GroupTag); err != nil {
+		return err
 	}
 
 	for _, i := range o.As {
@@ -138,6 +146,34 @@ func (o provideGroupOption) String() string {
 
 func (o provideGroupOption) applyProvideOption(opt *provideOptions) {
 	opt.Group = string(o)
+}
+
+// GroupMemberTag is a ProvideOption that assigns a tag to the member a
+// constructor contributes to a value group.
+//
+// Member tags have no effect on ordinary (unordered) value-group consumers.
+// They are consumed by ordered value groups (see the "ordered" modifier on a
+// consuming slice) to express before/after constraints between members.
+//
+// When used with a flattened group, the whole returned slice forms one
+// contiguous block carrying the tag while the order of the elements inside
+// the slice is preserved.
+//
+// This option is only meaningful together with Group and cannot be used for
+// constructors that produce result objects; tag those fields directly with
+// `grouptag:".."` instead.
+func GroupMemberTag(tag string) ProvideOption {
+	return provideGroupTagOption(tag)
+}
+
+type provideGroupTagOption string
+
+func (o provideGroupTagOption) String() string {
+	return fmt.Sprintf("GroupMemberTag(%q)", string(o))
+}
+
+func (o provideGroupTagOption) applyProvideOption(opt *provideOptions) {
+	opt.GroupTag = string(o)
 }
 
 // ID is a unique integer representing the constructor node in the dependency graph.
@@ -470,6 +506,7 @@ func (s *Scope) provide(ctor interface{}, opts provideOptions) (err error) {
 		constructorOptions{
 			ResultName:     opts.Name,
 			ResultGroup:    opts.Group,
+			ResultGroupTag: opts.GroupTag,
 			ResultAs:       opts.As,
 			Location:       opts.Location,
 			Callback:       opts.Callback,

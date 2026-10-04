@@ -213,9 +213,14 @@ func (s *Scope) getDecoratedValueGroup(name string, t reflect.Type) (reflect.Val
 	return items, ok
 }
 
-func (s *Scope) submitGroupedValue(name string, t reflect.Type, v reflect.Value) {
+func (s *Scope) submitGroupedBlock(name string, t reflect.Type, _ string, values []reflect.Value) {
 	k := key{group: name, t: t}
-	s.groups[k] = append(s.groups[k], v)
+	s.groups[k] = append(s.groups[k], values...)
+}
+
+func (s *Scope) submitGroupedValueAs(name string, t reflect.Type, values []reflect.Value) {
+	k := key{group: name, t: t}
+	s.groups[k] = append(s.groups[k], values...)
 }
 
 func (s *Scope) submitDecoratedGroupedValue(name string, t reflect.Type, v reflect.Value) {

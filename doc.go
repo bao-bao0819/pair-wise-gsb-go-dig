@@ -345,4 +345,51 @@
 //	  Handler []int `group:"server"`         // [][]int from dig.In
 //	  Handler []int `group:"server,flatten"` // []int from dig.In
 //	}
+//
+// # Ordered Value Groups
+//
+// Ordinary value groups are unordered and dig is free to shuffle the members
+// it hands to a consuming slice. A consuming slice may opt into deterministic
+// ordering by adding the `ordered` modifier:
+//
+//	type MiddlewareParams struct {
+//	  dig.In
+//
+//	  Middlewares []Middleware `group:"http,ordered"`
+//	}
+//
+// Ordering is driven by optional member tags declared on producers, using the
+// `grouptag` tag or the GroupMemberTag Provide option:
+//
+//	type MiddlewareResult struct {
+//	  dig.Out
+//
+//	  Middleware Middleware `group:"http" grouptag:"auth"`
+//	}
+//
+// The ordered consumer declares constraints with the `groupbefore` and
+// `groupafter` tags. Each comma-separated entry names two member tags as
+// "from:to". `groupbefore:"auth:audit"` places auth before audit, and
+// `groupafter` expresses the reverse relation. The wildcard tag "*" refers to
+// every member, including members without a tag:
+//
+//	type ServerParams struct {
+//	  dig.In
+//
+//	  Middlewares []Middleware `group:"http,ordered" groupbefore:"auth:audit,recover:*"`
+//	}
+//
+// Members with no constraint between them are delivered in registration
+// order, which is stable: members from a parent Scope precede members of a
+// child Scope, and members within a Scope follow the order in which they were
+// provided. A flatten result participates as a single contiguous block that
+// keeps the order of the elements in the returned slice; an empty flatten
+// result still reserves its tag.
+//
+// Constraints are resolved by tag, never by constructor identity. Dig
+// reports a member-level error if two visible members share a tag, if a
+// constraint references an unknown tag, or if the constraints contain a
+// directed cycle. In those cases the final consumer is never invoked.
+// Unordered consuming slices keep the existing unordered contract and ignore
+// member tags entirely.
 package dig // import "go.uber.org/dig"

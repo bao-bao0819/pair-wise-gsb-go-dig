@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseGroup(t *testing.T) {
@@ -49,6 +50,16 @@ func TestParseGroup(t *testing.T) {
 			wantG: group{Name: "somegroup", Soft: true},
 		},
 		{
+			name:  "ordered group",
+			group: "somegroup,ordered",
+			wantG: group{Name: "somegroup", Ordered: true},
+		},
+		{
+			name:  "ordered flatten group",
+			group: "somegroup,flatten,ordered",
+			wantG: group{Name: "somegroup", Flatten: true, Ordered: true},
+		},
+		{
 			name:    "error",
 			group:   `somegroup,abc`,
 			wantErr: `invalid option "abc"`,
@@ -64,5 +75,27 @@ func TestParseGroup(t *testing.T) {
 			}
 			assert.Equal(t, tt.wantG, gotG)
 		})
+	}
+}
+
+func TestParseOrderEdges(t *testing.T) {
+	t.Run("before", func(t *testing.T) {
+		edges, err := parseOrderEdges("auth:audit, recover:*", true)
+		require.NoError(t, err)
+		assert.Equal(t, []orderEdge{
+			{From: "auth", To: "audit"},
+			{From: "recover", To: "*"},
+		}, edges)
+	})
+
+	t.Run("after reverses edge", func(t *testing.T) {
+		edges, err := parseOrderEdges("audit:auth", false)
+		require.NoError(t, err)
+		assert.Equal(t, []orderEdge{{From: "auth", To: "audit"}}, edges)
+	})
+
+	for _, bad := range []string{"auth", "a:b:c", ":b"} {
+		_, err := parseOrderEdges(bad, true)
+		assert.Error(t, err, bad)
 	}
 }

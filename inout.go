@@ -57,6 +57,11 @@ type digSentinel struct{}
 //	group       Name of the Value Group from which this field will be filled.
 //	            The field must be a slice type. See Value Groups in the
 //	            package documentation for more information.
+//	grouptag    (Producers only) Names the contributed member for ordered
+//	            value groups. Ignored by unordered consumers.
+//	groupbefore Declares "from:to" ordering constraints between member tags on
+//	            an `group:"..,ordered"` consuming slice.
+//	groupafter  Like groupbefore, expressing the reverse relation.
 type In struct{ _ digSentinel }
 
 // Out is an embeddable type that signals to dig that the returned
@@ -78,6 +83,8 @@ type In struct{ _ digSentinel }
 //	group       Name of the Value Group to which this field's value is being
 //	            sent. See Value Groups in the package documentation for more
 //	            information.
+//	grouptag    Optional name of the contributed member (or flatten block),
+//	            used by ordered value-group consumers.
 type Out struct{ _ digSentinel }
 
 func isError(t reflect.Type) bool {
