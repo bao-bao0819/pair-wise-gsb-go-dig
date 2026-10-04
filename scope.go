@@ -93,6 +93,17 @@ type Scope struct {
 	// All the child scopes of this Scope.
 	childScopes []*Scope
 
+	// Constructors that ran successfully in this Scope and registered a
+	// cleanup callback, in the order they were created.
+	cleanups []*constructorNode
+
+	// Whether this Scope has been closed.
+	closed bool
+
+	// Error returned by the first call to Close, if any. Returned as-is
+	// by subsequent calls so that repeated Close reports a consistent state.
+	closeErr error
+
 	// clockSrc stores the source of time. Defaults to system clock.
 	clockSrc digclock.Clock
 }
@@ -126,6 +137,10 @@ func (s *Scope) Scope(name string, opts ...ScopeOption) *Scope {
 	child.clockSrc = s.clockSrc
 	child.deferAcyclicVerification = s.deferAcyclicVerification
 	child.recoverFromPanics = s.recoverFromPanics
+	// A Scope derived from a closed Scope is born closed: the parent's
+	// resources have been released, so no new resolutions may happen
+	// in its subtree.
+	child.closed = s.closed
 
 	// child copies the parent's graph nodes.
 	for _, node := range s.gh.nodes {

@@ -92,6 +92,10 @@ func (c *Container) Invoke(function interface{}, opts ...InvokeOption) error {
 // The function may return an error to indicate failure. The error will be
 // returned to the caller as-is.
 func (s *Scope) Invoke(function interface{}, opts ...InvokeOption) (err error) {
+	if s.closed {
+		return errScopeClosed{scope: s}
+	}
+
 	ftype := reflect.TypeOf(function)
 	if ftype == nil {
 		return newErrInvalidInput("can't invoke an untyped nil", nil)

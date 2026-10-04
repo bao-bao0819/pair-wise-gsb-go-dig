@@ -5,7 +5,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+
+### Added
+- `Container.Close` and `Scope.Close` shut down a container or scope by
+  running cleanup callbacks registered with the new `WithProviderCleanup`
+  `ProvideOption`. Cleanups run in reverse order of creation, dependents
+  before dependencies, and only for constructors that completed
+  successfully. Closing a parent scope closes its still-open child scopes
+  first; instances inherited from a parent scope remain owned by the
+  parent. Cleanup errors are collected and returned together, and a closed
+  scope rejects further `Invoke` calls.
 
 ## [1.19.0] - 2025-05-13
 

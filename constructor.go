@@ -69,6 +69,9 @@ type constructorNode struct {
 
 	// BeforeCallback for this provided function, if there is one.
 	beforeCallback BeforeCallback
+
+	// Cleanup for this provided function, if there is one.
+	cleanup CleanupCallback
 }
 
 type constructorOptions struct {
@@ -80,6 +83,7 @@ type constructorOptions struct {
 	Location       *digreflect.Func
 	Callback       Callback
 	BeforeCallback BeforeCallback
+	Cleanup        CleanupCallback
 }
 
 func newConstructorNode(ctor interface{}, s *Scope, origS *Scope, opts constructorOptions) (*constructorNode, error) {
@@ -121,6 +125,7 @@ func newConstructorNode(ctor interface{}, s *Scope, origS *Scope, opts construct
 		origS:          origS,
 		callback:       opts.Callback,
 		beforeCallback: opts.BeforeCallback,
+		cleanup:        opts.Cleanup,
 	}
 	s.newGraphNode(n, n.orders)
 	return n, nil
@@ -206,6 +211,14 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 	// container.
 	receiver.Commit(n.s)
 	n.called = true
+
+	// Register the cleanup with the Scope that owns this constructor
+	// only after the constructor ran successfully. A constructor that
+	// fails partway through never reaches this point, and a constructor
+	// with multiple outputs is registered exactly once.
+	if n.cleanup != nil {
+		n.s.addCleanup(n)
+	}
 	return nil
 }
 

@@ -45,6 +45,7 @@ type provideOptions struct {
 	Exported       bool
 	Callback       Callback
 	BeforeCallback BeforeCallback
+	Cleanup        CleanupCallback
 }
 
 func (o *provideOptions) Validate() error {
@@ -474,6 +475,7 @@ func (s *Scope) provide(ctor interface{}, opts provideOptions) (err error) {
 			Location:       opts.Location,
 			Callback:       opts.Callback,
 			BeforeCallback: opts.BeforeCallback,
+			Cleanup:        opts.Cleanup,
 		},
 	)
 	if err != nil {

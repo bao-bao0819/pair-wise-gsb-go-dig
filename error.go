@@ -235,6 +235,51 @@ func (e errConstructorFailed) Format(w fmt.State, c rune) {
 	formatError(e, w, c)
 }
 
+// errCleanupFailed is returned when a cleanup callback registered with
+// [WithProviderCleanup] returned a non-nil error.
+type errCleanupFailed struct {
+	Func   *digreflect.Func
+	Reason error
+}
+
+var _ digError = errCleanupFailed{}
+
+func (e errCleanupFailed) Error() string { return fmt.Sprint(e) }
+
+func (e errCleanupFailed) Unwrap() error { return e.Reason }
+
+func (e errCleanupFailed) writeMessage(w io.Writer, verb string) {
+	fmt.Fprintf(w, "received non-nil error from cleanup for function "+verb, e.Func)
+}
+
+func (e errCleanupFailed) Format(w fmt.State, c rune) {
+	formatError(e, w, c)
+}
+
+// errScopeClosed is returned when an operation is attempted on a Scope
+// that has already been closed.
+type errScopeClosed struct {
+	scope *Scope
+}
+
+var _ digError = errScopeClosed{}
+
+func (e errScopeClosed) Error() string { return fmt.Sprint(e) }
+
+func (e errScopeClosed) Unwrap() error { return nil }
+
+func (e errScopeClosed) writeMessage(w io.Writer, _ string) {
+	if name := e.scope.name; name != "" {
+		fmt.Fprintf(w, "scope %q is closed", name)
+	} else {
+		io.WriteString(w, "scope is closed")
+	}
+}
+
+func (e errScopeClosed) Format(w fmt.State, c rune) {
+	formatError(e, w, c)
+}
+
 // errArgumentsFailed is returned when a function could not be run because one
 // of its dependencies failed to build for any reason.
 type errArgumentsFailed struct {
