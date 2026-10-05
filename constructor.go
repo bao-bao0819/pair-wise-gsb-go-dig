@@ -254,3 +254,47 @@ func (sr *stagingContainerWriter) Commit(cw containerWriter) {
 		}
 	}
 }
+
+// stagingDecoratedWriter is a containerWriter that records decorated results
+// and defers committing them until Commit is called. This ensures that a
+// multi-output decorator either commits all of its outputs at once or, when
+// it fails, commits none of them.
+type stagingDecoratedWriter struct {
+	values map[key]reflect.Value
+	groups map[key]reflect.Value
+}
+
+var _ containerWriter = (*stagingDecoratedWriter)(nil)
+
+func newStagingDecoratedWriter() *stagingDecoratedWriter {
+	return &stagingDecoratedWriter{
+		values: make(map[key]reflect.Value),
+		groups: make(map[key]reflect.Value),
+	}
+}
+
+func (sr *stagingDecoratedWriter) setValue(_ string, _ reflect.Type, _ reflect.Value) {
+	digerror.BugPanicf("stagingDecoratedWriter.setValue must never be called")
+}
+
+func (sr *stagingDecoratedWriter) setDecoratedValue(name string, t reflect.Type, v reflect.Value) {
+	sr.values[key{t: t, name: name}] = v
+}
+
+func (sr *stagingDecoratedWriter) submitGroupedValue(_ string, _ reflect.Type, _ reflect.Value) {
+	digerror.BugPanicf("stagingDecoratedWriter.submitGroupedValue must never be called")
+}
+
+func (sr *stagingDecoratedWriter) submitDecoratedGroupedValue(group string, t reflect.Type, v reflect.Value) {
+	sr.groups[key{t: t, group: group}] = v
+}
+
+// Commit commits the received decorated results to the provided containerWriter.
+func (sr *stagingDecoratedWriter) Commit(cw containerWriter) {
+	for k, v := range sr.values {
+		cw.setDecoratedValue(k.name, k.t, v)
+	}
+	for k, v := range sr.groups {
+		cw.submitDecoratedGroupedValue(k.group, k.t, v)
+	}
+}

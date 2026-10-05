@@ -5,7 +5,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+### Added
+- `Scope.DecorationChain` (and `Container.DecorationChain`) provides an
+  explicit entry point for registering multiple decorators for the same
+  type within one Scope. Each decorator is a named stage with a stable
+  identity; same-type stages run in declaration order, a stage injecting its
+  own output receives the previous stage's result, and multi-output stages
+  commit their outputs together. Cycles between decorator stages are
+  reported with the involved stage identities. Intermediate results stay
+  scoped per stage, so parent and child Scopes never share caches they
+  should not. The single `Decorate` behavior is unchanged.
 
 ## [1.19.0] - 2025-05-13
 

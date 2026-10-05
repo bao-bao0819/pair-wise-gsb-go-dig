@@ -212,43 +212,86 @@ func (ps paramSingle) getDecoratedValue(c containerStore) (reflect.Value, bool) 
 // this parameter, the closest one to the Scope that invoked this will be used.
 // If there are no decorators associated with this parameter, _noValue is returned.
 func (ps paramSingle) buildWithDecorators(c containerStore) (v reflect.Value, found bool, err error) {
-	var (
-		d               decorator
-		decoratingScope containerStore
-	)
 	stores := c.storesToRoot()
+	_, buildingStage := c.(*stageStore)
 
-	for _, s := range stores {
-		if d, found = s.getValueDecorator(ps.Name, ps.Type); !found {
+	for _, sc := range stores {
+		nodes := sc.getValueDecorators(ps.Name, ps.Type)
+		if len(nodes) == 0 {
 			continue
 		}
-		if d.State() == decoratorOnStack {
-			// This decorator is already being run.
-			// Avoid a cycle and look further.
-			d = nil
+
+		// Nodes that still have to run for this key. While building a stage,
+		// the stageStore view has already removed the running node from the
+		// list so its own input resolves to the previous stage. Outside of a
+		// stage, an OnStack node means a decorator reached its own type:
+		// preserve the legacy behavior of bypassing this Scope and falling
+		// back to undecorated values from an ancestor.
+		pending := make([]*decoratorNode, 0, len(nodes))
+		bypassScope := false
+		for i, n := range nodes {
+			if n.State() == decoratorOnStack {
+				if buildingStage {
+					// The truncated stage view should never expose the
+					// running node, so any OnStack node here represents a
+					// different stage depending back onto one already
+					// running: a genuine cycle.
+					err = n.s.decoratorCycleError(n)
+					return _noValue, false, errParamSingleFailed{
+						CtorID: 1,
+						Key:    key{t: ps.Type, name: ps.Name},
+						Reason: err,
+					}
+				}
+				if i == len(nodes)-1 {
+					// This Scope's last decorator for the key reached its
+					// own type: bypass the Scope and fall back to an
+					// ancestor or the undecorated value.
+					bypassScope = true
+					break
+				}
+				// An earlier decorator reached its own type. This cannot
+				// happen for chain stages (they always build with a stage
+				// view); legacy Decorate allows only one decorator per key,
+				// so the last-node branch above already covers it.
+				continue
+			}
+			pending = append(pending, n)
+		}
+		if bypassScope {
 			continue
 		}
-		decoratingScope = s
-		break
-	}
-	if !found || d == nil {
-		return _noValue, false, nil
-	}
-	if err = d.Call(decoratingScope); err != nil {
-		v, err = _noValue, errParamSingleFailed{
-			CtorID: 1,
-			Key:    key{t: ps.Type, name: ps.Name},
-			Reason: err,
+
+		// Run every not-yet-called stage in declaration order.
+		for _, n := range pending {
+			if n.State() == decoratorCalled {
+				continue
+			}
+			var store containerStore = n.s
+			if n.chainName != "" {
+				store = newStageStore(n.s, n)
+			}
+			if err = n.Call(store); err != nil {
+				return _noValue, false, errParamSingleFailed{
+					CtorID: n.ID(),
+					Key:    key{t: ps.Type, name: ps.Name},
+					Reason: err,
+				}
+			}
 		}
-		return v, found, err
+
+		// The nearest decorating Scope shadows every ancestor decoration.
+		last := nodes[len(nodes)-1]
+		v, _ = sc.getNodeDecoratedValue(last, key{t: ps.Type, name: ps.Name})
+		return v, true, nil
 	}
-	v, _ = decoratingScope.getDecoratedValue(ps.Name, ps.Type)
-	return
+
+	return _noValue, false, nil
 }
 
 func (ps paramSingle) Build(c containerStore) (reflect.Value, error) {
 	v, found, err := ps.buildWithDecorators(c)
-	if found {
+	if found || err != nil {
 		return v, err
 	}
 
@@ -571,24 +614,46 @@ func (pt paramGroupedSlice) getDecoratedValues(c containerStore) (reflect.Value,
 }
 
 // search the given container and its parents for matching group decorators
-// and call them to commit values. If any decorators return an error,
-// that error is returned immediately. If all decorators succeeds, nil is returned.
-// The order in which the decorators are invoked is from the top level scope to
-// the current scope, to account for decorators that decorate values that were
-// already decorated.
+// and call them to commit values. Decorators run from the root Scope down to
+// the current Scope, and within each Scope in declaration order, so that each
+// stage receives the result of its predecessor. If any decorator returns an
+// error, that error is returned immediately.
 func (pt paramGroupedSlice) callGroupDecorators(c containerStore) error {
+	_, buildingStage := c.(*stageStore)
+
 	stores := c.storesToRoot()
 	for i := len(stores) - 1; i >= 0; i-- {
-		c := stores[i]
-		if d, found := c.getGroupDecorator(pt.Group, pt.Type.Elem()); found {
-			if d.State() == decoratorOnStack {
-				// This decorator is already being run. Avoid cycle
-				// and look further.
+		sc := stores[i]
+		nodes := sc.getGroupDecorators(pt.Group, pt.Type.Elem())
+		if len(nodes) == 0 {
+			continue
+		}
+
+		for _, n := range nodes {
+			if n.State() == decoratorOnStack {
+				if buildingStage {
+					err := n.s.decoratorCycleError(n)
+					return errParamGroupFailed{
+						CtorID: n.ID(),
+						Key:    key{group: pt.Group, t: pt.Type.Elem()},
+						Reason: err,
+					}
+				}
+				// Legacy behavior: a decorator reached its own group;
+				// bypass this Scope and rely on ancestor output.
 				continue
 			}
-			if err := d.Call(c); err != nil {
+			if n.State() == decoratorCalled {
+				continue
+			}
+
+			var store containerStore = n.s
+			if n.chainName != "" {
+				store = newStageStore(n.s, n)
+			}
+			if err := n.Call(store); err != nil {
 				return errParamGroupFailed{
-					CtorID: d.ID(),
+					CtorID: n.ID(),
 					Key:    key{group: pt.Group, t: pt.Type.Elem()},
 					Reason: err,
 				}
@@ -627,7 +692,24 @@ func (pt paramGroupedSlice) Build(c containerStore) (reflect.Value, error) {
 		return _noValue, err
 	}
 
-	// Check if we have decorated values
+	// The nearest Scope that decorates the group shadows decorated groups
+	// of every ancestor Scope. Return the output of the last stage of that
+	// Scope, served from the producing node's own cache.
+	for _, sc := range c.storesToRoot() {
+		nodes := sc.getGroupDecorators(pt.Group, pt.Type.Elem())
+		if len(nodes) == 0 {
+			continue
+		}
+		last := nodes[len(nodes)-1]
+		if last.State() != decoratorCalled {
+			continue
+		}
+		if v, ok := sc.getNodeDecoratedValue(last, key{group: pt.Group, t: pt.Type}); ok {
+			return v, nil
+		}
+	}
+
+	// Check if we have decorated values cached by the legacy path.
 	if decoratedItems, ok := pt.getDecoratedValues(c); ok {
 		return decoratedItems, nil
 	}

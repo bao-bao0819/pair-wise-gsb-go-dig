@@ -49,8 +49,11 @@ type Scope struct {
 	// key.
 	providers map[key][]*constructorNode
 
-	// Mapping from key to the decorator that decorates a value for that key.
-	decorators map[key]*decoratorNode
+	// Mapping from key to all the decorator nodes that decorate a value for
+	// that key. Nodes are ordered by their stage within this Scope: legacy
+	// decorators registered with Decorate occupy stage zero, and decorators
+	// registered with a DecorationChain follow in declaration order.
+	decorators map[key][]*decoratorNode
 
 	// constructorNodes provided directly to this Scope. i.e. it does not include
 	// any nodes that were provided to the parent Scope this inherited from.
@@ -67,6 +70,18 @@ type Scope struct {
 
 	// Values groups that generated via decoraters in the Scope.
 	decoratedGroups map[key]reflect.Value
+
+	// Stack of decorator nodes that are currently being called. This is used
+	// to detect cycles between decorators and to report the involved stages.
+	decoratorStack []*decoratorNode
+
+	// Number of stages registered for each decoration chain name. This
+	// assigns the stable 1-based stage position to each chain decorator.
+	chainStages map[string]int
+
+	// Stage names registered for each decoration chain, in declaration
+	// order. Used to reject duplicate stage names within a chain.
+	chainStageNames map[string][]string
 
 	// Source of randomness.
 	rand *rand.Rand
@@ -100,11 +115,13 @@ type Scope struct {
 func newScope() *Scope {
 	s := &Scope{
 		providers:       make(map[key][]*constructorNode),
-		decorators:      make(map[key]*decoratorNode),
+		decorators:      make(map[key][]*decoratorNode),
 		values:          make(map[key]reflect.Value),
 		decoratedValues: make(map[key]reflect.Value),
 		groups:          make(map[key][]reflect.Value),
 		decoratedGroups: make(map[key]reflect.Value),
+		chainStages:     make(map[string]int),
+		chainStageNames: make(map[string][]string),
 		invokerFn:       defaultInvoker,
 		rand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		clockSrc:        digclock.System,
@@ -232,16 +249,58 @@ func (s *Scope) getGroupProviders(name string, t reflect.Type) []provider {
 }
 
 func (s *Scope) getValueDecorator(name string, t reflect.Type) (decorator, bool) {
-	return s.getDecorators(key{name: name, t: t})
+	return s.getLastDecorator(key{name: name, t: t})
 }
 
 func (s *Scope) getGroupDecorator(name string, t reflect.Type) (decorator, bool) {
-	return s.getDecorators(key{group: name, t: t})
+	return s.getLastDecorator(key{group: name, t: t})
 }
 
-func (s *Scope) getDecorators(k key) (decorator, bool) {
-	d, found := s.decorators[k]
-	return d, found
+func (s *Scope) getLastDecorator(k key) (decorator, bool) {
+	nodes := s.decorators[k]
+	if len(nodes) == 0 {
+		return nil, false
+	}
+	return nodes[len(nodes)-1], true
+}
+
+func (s *Scope) getValueDecorators(name string, t reflect.Type) []*decoratorNode {
+	return s.decorators[key{name: name, t: t}]
+}
+
+func (s *Scope) getGroupDecorators(name string, t reflect.Type) []*decoratorNode {
+	return s.decorators[key{group: name, t: t}]
+}
+
+// getNodeDecoratedValue returns the value produced for the given key by the
+// given decorator node. Each decorator stage keeps the value it produced
+// separately, so intermediate results of a chain never overwrite each other.
+func (s *Scope) getNodeDecoratedValue(n *decoratorNode, k key) (reflect.Value, bool) {
+	v, ok := n.outputs[k]
+	return v, ok
+}
+
+// nextChainStage returns the position that the next decorator of the given
+// decoration chain would take.
+func (s *Scope) nextChainStage(chainName string) int {
+	return s.chainStages[chainName] + 1
+}
+
+// checkChainStageName rejects duplicate stage names within the same chain.
+func (s *Scope) checkChainStageName(chainName, stageName string) error {
+	for _, name := range s.chainStageNames[chainName] {
+		if name == stageName {
+			return newErrInvalidInput(
+				fmt.Sprintf("stage %q is already registered in decoration chain %q", stageName, chainName), nil)
+		}
+	}
+	return nil
+}
+
+// commitChainStage commits the stage position and records the stage name.
+func (s *Scope) commitChainStage(chainName, stageName string) {
+	s.chainStages[chainName]++
+	s.chainStageNames[chainName] = append(s.chainStageNames[chainName], stageName)
 }
 
 func (s *Scope) getProviders(k key) []provider {

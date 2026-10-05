@@ -134,6 +134,19 @@ type containerStore interface {
 	// type.
 	getGroupDecorator(name string, t reflect.Type) (decorator, bool)
 
+	// Returns all decorators that can decorate values for the given name and
+	// type, in the order of their stages.
+	getValueDecorators(name string, t reflect.Type) []*decoratorNode
+
+	// Returns all decorators that can decorate values for the given group and
+	// type, in the order of their stages.
+	getGroupDecorators(name string, t reflect.Type) []*decoratorNode
+
+	// Returns the value produced for the given key by the given decorator
+	// node. Each stage of a decoration chain stores its own output, which
+	// allows intermediate results to be addressed independently.
+	getNodeDecoratedValue(n *decoratorNode, k key) (reflect.Value, bool)
+
 	// Reports a list of stores (starting at this store) up to the root
 	// store.
 	storesToRoot() []containerStore
