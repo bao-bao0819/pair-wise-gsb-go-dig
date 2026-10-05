@@ -5,7 +5,19 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- No changes yet.
+### Added
+- `DecorateChain` registers a decorator as a new stage of the decorate chain
+  for each of its result types. Unlike `Decorate`, multiple stages may be
+  registered for the same type in the same scope. Stages run in declaration
+  order, and a stage that requests the type it decorates receives the
+  previous stage's result.
+
+### Changed
+- A decorator that returns an error no longer caches partial results; the
+  decorator is retried by subsequent resolutions instead.
+- A value that can only be produced by a decorate chain stage that is
+  already running is now reported as a dependency cycle identifying the
+  stage of the chain, instead of a missing type.
 
 ## [1.19.0] - 2025-05-13
 

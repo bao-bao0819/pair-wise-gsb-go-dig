@@ -174,6 +174,10 @@ func (s *Scope) Invoke(function interface{}, opts ...InvokeOption) (err error) {
 // Checks that all direct dependencies of the provided parameters are present in
 // the container. Returns an error if not.
 func shallowCheckDependencies(c containerStore, pl paramList) error {
+	if err := findDecorateChainCycle(c, pl.Params...); err != nil {
+		return err
+	}
+
 	var err errMissingTypes
 
 	missingDeps := findMissingDependencies(c, pl.Params...)
@@ -199,7 +203,10 @@ func findMissingDependencies(c containerStore, params ...param) []paramSingle {
 			// and it is NOT being decorated and is NOT optional.
 			// In the case that there is no providers but there is a decorated value
 			// of this type, it can be provided safely so we can safely skip this.
-			if len(allProviders) == 0 && !hasDecoratedValue && !p.Optional {
+			// Similarly, if a decorate chain is registered for this type,
+			// the chain will attempt to build the value when it is needed.
+			if len(allProviders) == 0 && !hasDecoratedValue && !p.Optional &&
+				!hasDecorateChain(c, p.Name, p.Type) {
 				missingDeps = append(missingDeps, p)
 			}
 		case paramObject:

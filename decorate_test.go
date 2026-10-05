@@ -596,7 +596,9 @@ func TestDecorateFailure(t *testing.T) {
 		c.RequireDecorate(func(a *A) *A { return &A{Name: a.Name + "'"} })
 		err := c.Invoke(func(a *A) string { return a.Name })
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "missing type: *dig_test.A")
+		assert.Contains(t, err.Error(), "cycle detected")
+		assert.Contains(t, err.Error(), "stage 1 of its decorate chain")
+		assert.Contains(t, err.Error(), "*dig_test.A")
 	})
 
 	t.Run("decorate the same type twice", func(t *testing.T) {

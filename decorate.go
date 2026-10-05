@@ -36,10 +36,27 @@ const (
 	decoratorCalled
 )
 
-type decorator interface {
-	Call(c containerStore) error
-	ID() dot.CtorID
-	State() decoratorState
+// decoratorChain is the ordered list of decorators registered for a single
+// key with Decorate or DecorateChain. Each element of the chain is a stage
+// with a stable identity: its 1-based position in the chain.
+//
+// Stages of a chain run in declaration order, and each stage runs at most
+// once. A stage that requests the type it decorates receives the result
+// committed by the previous stage of the chain; the first stage receives
+// the value that would be built if the chain did not exist.
+type decoratorChain struct {
+	stages []*decoratorNode
+}
+
+// onStackStage returns the 0-based index of the first stage of this chain
+// that is currently running, or -1 if no stage is running.
+func (ch *decoratorChain) onStackStage() int {
+	for i, d := range ch.stages {
+		if d.State() == decoratorOnStack {
+			return i
+		}
+	}
+	return -1
 }
 
 type decoratorNode struct {
@@ -109,6 +126,14 @@ func (n *decoratorNode) Call(s containerStore) (err error) {
 	}
 
 	n.state = decoratorOnStack
+	defer func() {
+		if err != nil {
+			// The decorator did not run to completion. Allow it to be
+			// retried by a subsequent resolution instead of caching
+			// the failure.
+			n.state = decoratorReady
+		}
+	}()
 
 	if err := shallowCheckDependencies(s, n.params); err != nil {
 		return errMissingDependencies{
@@ -153,10 +178,14 @@ func (n *decoratorNode) Call(s containerStore) (err error) {
 		}()
 	}
 
+	receiver := newStagingContainerWriter()
 	results := s.invoker()(reflect.ValueOf(n.dcor), args)
-	if err = n.results.ExtractList(n.s, true /* decorated */, results); err != nil {
+	if err = n.results.ExtractList(receiver, true /* decorated */, results); err != nil {
 		return err
 	}
+	// Commit the results only after the decorator ran to completion so
+	// that a failed stage does not leave partial results behind.
+	receiver.Commit(n.s)
 	n.state = decoratorCalled
 	return nil
 }
@@ -207,6 +236,14 @@ func (c *Container) Decorate(decorator interface{}, opts ...DecorateOption) erro
 	return c.scope.Decorate(decorator, opts...)
 }
 
+// DecorateChain registers a decorator as a new stage of the decorate chain
+// for each of its result types.
+// Decorations at this level affect all scopes of the container.
+// See Scope.DecorateChain for information on how to use this method.
+func (c *Container) DecorateChain(decorator interface{}, opts ...DecorateOption) error {
+	return c.scope.DecorateChain(decorator, opts...)
+}
+
 // Decorate provides a decorator for a type that has already been provided in the Scope.
 //
 // Similar to Provide, Decorate takes in a function with zero or more dependencies and one
@@ -245,6 +282,53 @@ func (c *Container) Decorate(decorator interface{}, opts ...DecorateOption) erro
 //
 // Similar to a provider, the decorator function gets called *at most once*.
 func (s *Scope) Decorate(decorator interface{}, opts ...DecorateOption) error {
+	return s.decorate(decorator, false /* chained */, opts)
+}
+
+// DecorateChain registers a decorator as a new stage of the decorate chain
+// for each of the types it returns.
+//
+// Unlike Decorate, which allows a type to be decorated only once per scope,
+// DecorateChain may be called multiple times for the same type in the same
+// scope. Each call appends a new stage to the type's decorate chain with a
+// stable identity: its position in the chain, in declaration order.
+//
+// For example,
+//
+//	s.DecorateChain(func(log *zap.Logger) *zap.Logger {
+//	  return log.With(zap.String("request", reqID))
+//	})
+//	s.DecorateChain(func(log *zap.Logger) *zap.Logger {
+//	  return log.With(zap.String("audit", auditor))
+//	})
+//
+// Both decorators run, in declaration order, for anything in the scope that
+// depends on *zap.Logger: the second stage receives the *zap.Logger
+// returned by the first stage.
+//
+// A stage that requests a type it decorates receives the result of the
+// previous stage of that type's chain; the first stage receives the value
+// that would be built if the chain did not exist (for example, the output
+// of a parent scope's chain, or the undecorated provided value). A stage
+// that requests any other type resolves it following the usual dependency
+// rules.
+//
+// A decorator with multiple results is a single stage of the chain of each
+// of its result types: it runs at most once, and commits all of its results
+// together. If a stage fails, its result is not cached: a subsequent
+// resolution retries it instead of running the stages that follow it.
+//
+// If a value can only be produced by a chain stage that is already running,
+// Dig reports a dependency cycle that identifies the stage of the chain.
+func (s *Scope) DecorateChain(decorator interface{}, opts ...DecorateOption) error {
+	return s.decorate(decorator, true /* chained */, opts)
+}
+
+// decorate registers the given decorator with this scope. If chained is
+// true, the decorator is appended to the decorate chain of each of its
+// result types; otherwise, each result type must not have been decorated
+// before, and the decorator becomes the only stage of its chain.
+func (s *Scope) decorate(decorator interface{}, chained bool, opts []DecorateOption) error {
 	var options decorateOptions
 	for _, opt := range opts {
 		opt.apply(&options)
@@ -260,37 +344,45 @@ func (s *Scope) Decorate(decorator interface{}, opts ...DecorateOption) error {
 		return err
 	}
 	for _, k := range keys {
-		if _, ok := s.decorators[k]; ok {
+		chain, ok := s.decorators[k]
+		if !ok {
+			chain = new(decoratorChain)
+			s.decorators[k] = chain
+		} else if !chained {
 			return newErrInvalidInput(
 				fmt.Sprintf("cannot decorate using function %v: %s already decorated", dn.dtype, k), nil)
 		}
-		s.decorators[k] = dn
+		chain.stages = append(chain.stages, dn)
 	}
 
 	if info := options.Info; info != nil {
-		params := dn.params.DotParam()
-		results := dn.results.DotResult()
-		info.ID = (ID)(dn.id)
-		info.Inputs = make([]*Input, len(params))
-		info.Outputs = make([]*Output, len(results))
-
-		for i, param := range params {
-			info.Inputs[i] = &Input{
-				t:        param.Type,
-				optional: param.Optional,
-				name:     param.Name,
-				group:    param.Group,
-			}
-		}
-		for i, res := range results {
-			info.Outputs[i] = &Output{
-				t:     res.Type,
-				name:  res.Name,
-				group: res.Group,
-			}
-		}
+		fillDecorateInfo(info, dn)
 	}
 	return nil
+}
+
+func fillDecorateInfo(info *DecorateInfo, dn *decoratorNode) {
+	params := dn.params.DotParam()
+	results := dn.results.DotResult()
+	info.ID = (ID)(dn.id)
+	info.Inputs = make([]*Input, len(params))
+	info.Outputs = make([]*Output, len(results))
+
+	for i, param := range params {
+		info.Inputs[i] = &Input{
+			t:        param.Type,
+			optional: param.Optional,
+			name:     param.Name,
+			group:    param.Group,
+		}
+	}
+	for i, res := range results {
+		info.Outputs[i] = &Output{
+			t:     res.Type,
+			name:  res.Name,
+			group: res.Group,
+		}
+	}
 }
 
 func findResultKeys(r resultList) ([]key, error) {

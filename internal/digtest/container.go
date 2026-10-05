@@ -111,6 +111,22 @@ func (s *Scope) RequireDecorate(f interface{}, opts ...dig.DecorateOption) {
 	require.NoError(s.t, s.Decorate(f, opts...), "failed to decorate")
 }
 
+// RequireDecorateChain appends the given function to the decorate chain of
+// the container, halting the test if it fails.
+func (c *Container) RequireDecorateChain(f interface{}, opts ...dig.DecorateOption) {
+	c.t.Helper()
+
+	require.NoError(c.t, c.DecorateChain(f, opts...), "failed to decorate")
+}
+
+// RequireDecorateChain appends the given function to the decorate chain of
+// the scope, halting the test if it fails.
+func (s *Scope) RequireDecorateChain(f interface{}, opts ...dig.DecorateOption) {
+	s.t.Helper()
+
+	require.NoError(s.t, s.DecorateChain(f, opts...), "failed to decorate")
+}
+
 // Scope builds a subscope of this container with the given name.
 // The returned Scope is similarly augmented to ease testing.
 func (c *Container) Scope(name string, opts ...dig.ScopeOption) *Scope {

@@ -207,47 +207,125 @@ func (ps paramSingle) getDecoratedValue(c containerStore) (reflect.Value, bool) 
 	return _noValue, false
 }
 
-// builds the parameter using decorators in all scopes that affect the
-// current scope, if there are any. If there are multiple Scopes that decorates
-// this parameter, the closest one to the Scope that invoked this will be used.
-// If there are no decorators associated with this parameter, _noValue is returned.
-func (ps paramSingle) buildWithDecorators(c containerStore) (v reflect.Value, found bool, err error) {
-	var (
-		d               decorator
-		decoratingScope containerStore
-	)
-	stores := c.storesToRoot()
+// hasDecorateChain reports whether any scope in effect of the given
+// containerStore has registered a decorate chain for the given name and
+// type.
+func hasDecorateChain(c containerStore, name string, t reflect.Type) bool {
+	for _, s := range c.storesToRoot() {
+		if _, ok := s.getValueDecorator(name, t); ok {
+			return true
+		}
+	}
+	return false
+}
 
-	for _, s := range stores {
-		if d, found = s.getValueDecorator(ps.Name, ps.Type); !found {
+// findDecorateChainCycle returns a non-nil error if any of the given params
+// can only be produced by a decorate chain stage that is already running:
+// the value (transitively) depends on itself.
+func findDecorateChainCycle(c containerStore, params ...param) error {
+	for _, param := range params {
+		switch p := param.(type) {
+		case paramSingle:
+			if p.Optional {
+				continue
+			}
+			if len(c.getAllValueProviders(p.Name, p.Type)) > 0 {
+				continue
+			}
+			if _, ok := p.getDecoratedValue(c); ok {
+				continue
+			}
+			// The value has no provider and no decorated value, so it
+			// can only come from a decorate chain. If the first stage
+			// of every chain registered for it is already running, the
+			// value is being built by the very stage that would produce
+			// it: a dependency cycle.
+			var pending *decoratorChain
+			resolvable := false
+			for _, s := range c.storesToRoot() {
+				chain, ok := s.getValueDecorator(p.Name, p.Type)
+				if !ok {
+					continue
+				}
+				if chain.onStackStage() == 0 {
+					if pending == nil {
+						pending = chain
+					}
+					continue
+				}
+				resolvable = true
+				break
+			}
+			if !resolvable && pending != nil {
+				return errDecorateChainCycle{
+					Key:   key{name: p.Name, t: p.Type},
+					Stage: 1,
+					Func:  pending.stages[0].location,
+				}
+			}
+		case paramObject:
+			for _, f := range p.Fields {
+				if err := findDecorateChainCycle(c, f.Param); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// builds the parameter using the decorate chains of all scopes that affect
+// the current scope, if there are any. If multiple Scopes decorate this
+// parameter, the chain closest to the Scope that invoked this is used, and
+// the decorated value of a parent Scope's chain feeds into it as the input
+// of its first stage.
+//
+// Within a chain, stages run in declaration order. A stage that requests
+// the type it decorates receives the result committed by the previous stage
+// of the chain; the first stage receives the value that would be built if
+// the chain did not exist.
+//
+// If the parameter can only be produced by a chain stage that is already
+// running, the third return value reports that stage so that the caller can
+// report a dependency cycle instead of a missing type. If there are no
+// decorators associated with this parameter, _noValue is returned.
+func (ps paramSingle) buildWithDecorators(c containerStore) (v reflect.Value, found bool, pending *decoratorNode, err error) {
+	for _, s := range c.storesToRoot() {
+		chain, ok := s.getValueDecorator(ps.Name, ps.Type)
+		if !ok {
 			continue
 		}
-		if d.State() == decoratorOnStack {
-			// This decorator is already being run.
-			// Avoid a cycle and look further.
-			d = nil
+		stages := chain.stages
+		if b := chain.onStackStage(); b == 0 {
+			// The first stage of this chain is already running.
+			// Its input comes from further up the scope chain.
+			if pending == nil {
+				pending = stages[0]
+			}
 			continue
+		} else if b > 0 {
+			// A later stage of this chain is already running.
+			// Its input is the result committed by the stages before
+			// it, so only those may run now.
+			stages = stages[:b]
 		}
-		decoratingScope = s
-		break
-	}
-	if !found || d == nil {
-		return _noValue, false, nil
-	}
-	if err = d.Call(decoratingScope); err != nil {
-		v, err = _noValue, errParamSingleFailed{
-			CtorID: 1,
-			Key:    key{t: ps.Type, name: ps.Name},
-			Reason: err,
+		for _, d := range stages {
+			if err = d.Call(s); err != nil {
+				return _noValue, true, nil, errParamSingleFailed{
+					CtorID: d.ID(),
+					Key:    key{t: ps.Type, name: ps.Name},
+					Reason: err,
+				}
+			}
 		}
-		return v, found, err
+		v, _ = s.getDecoratedValue(ps.Name, ps.Type)
+		return v, true, nil, nil
 	}
-	v, _ = decoratingScope.getDecoratedValue(ps.Name, ps.Type)
-	return
+	return _noValue, false, pending, nil
 }
 
 func (ps paramSingle) Build(c containerStore) (reflect.Value, error) {
-	v, found, err := ps.buildWithDecorators(c)
+	v, found, pending, err := ps.buildWithDecorators(c)
 	if found {
 		return v, err
 	}
@@ -280,6 +358,16 @@ func (ps paramSingle) Build(c containerStore) (reflect.Value, error) {
 	if len(providers) == 0 {
 		if ps.Optional {
 			return reflect.Zero(ps.Type), nil
+		}
+		if pending != nil {
+			// The only thing that could produce this value is a
+			// decorate chain stage that is already running:
+			// the value depends on itself.
+			return _noValue, errDecorateChainCycle{
+				Key:   key{name: ps.Name, t: ps.Type},
+				Stage: 1,
+				Func:  pending.location,
+			}
 		}
 		return _noValue, newErrMissingTypes(c, key{name: ps.Name, t: ps.Type})
 	}
@@ -580,12 +668,18 @@ func (pt paramGroupedSlice) callGroupDecorators(c containerStore) error {
 	stores := c.storesToRoot()
 	for i := len(stores) - 1; i >= 0; i-- {
 		c := stores[i]
-		if d, found := c.getGroupDecorator(pt.Group, pt.Type.Elem()); found {
-			if d.State() == decoratorOnStack {
-				// This decorator is already being run. Avoid cycle
-				// and look further.
-				continue
-			}
+		chain, found := c.getGroupDecorator(pt.Group, pt.Type.Elem())
+		if !found {
+			continue
+		}
+		stages := chain.stages
+		if b := chain.onStackStage(); b >= 0 {
+			// A stage of this chain is already being run. The value
+			// seen by it is the result committed by the stages before
+			// it, so only those may run now.
+			stages = stages[:b]
+		}
+		for _, d := range stages {
 			if err := d.Call(c); err != nil {
 				return errParamGroupFailed{
 					CtorID: d.ID(),

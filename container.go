@@ -126,13 +126,13 @@ type containerStore interface {
 	// type across all the Scopes that are in effect of this containerStore.
 	getAllValueProviders(name string, t reflect.Type) []provider
 
-	// Returns the decorator that can decorate values for the given name and
-	// type.
-	getValueDecorator(name string, t reflect.Type) (decorator, bool)
+	// Returns the decorate chain that decorates values for the given name
+	// and type.
+	getValueDecorator(name string, t reflect.Type) (*decoratorChain, bool)
 
-	// Reutrns the decorator that can decorate values for the given group and
-	// type.
-	getGroupDecorator(name string, t reflect.Type) (decorator, bool)
+	// Returns the decorate chain that decorates values for the given group
+	// and type.
+	getGroupDecorator(name string, t reflect.Type) (*decoratorChain, bool)
 
 	// Reports a list of stores (starting at this store) up to the root
 	// store.

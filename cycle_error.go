@@ -77,3 +77,32 @@ func (e errCycleDetected) Format(w fmt.State, c rune) {
 func IsCycleDetected(err error) bool {
 	return errors.As(err, &errCycleDetected{})
 }
+
+// errDecorateChainCycle is returned when a value can only be produced by a
+// decorate chain stage that is already running: the value transitively
+// depends on itself.
+type errDecorateChainCycle struct {
+	// Key of the value that forms the cycle.
+	Key key
+
+	// Stage is the 1-based identity of the in-progress stage of the
+	// value's decorate chain.
+	Stage int
+
+	// Func is where the in-progress stage's decorator was defined.
+	Func *digreflect.Func
+}
+
+var _ digError = errDecorateChainCycle{}
+
+func (e errDecorateChainCycle) Error() string { return fmt.Sprint(e) }
+
+func (e errDecorateChainCycle) writeMessage(w io.Writer, _ string) {
+	fmt.Fprintf(w,
+		"cycle detected: %v depends on itself through stage %d of its decorate chain (%v)",
+		e.Key, e.Stage, e.Func)
+}
+
+func (e errDecorateChainCycle) Format(w fmt.State, c rune) {
+	formatError(e, w, c)
+}

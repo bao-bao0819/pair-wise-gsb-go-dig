@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"reflect"
 
-	"go.uber.org/dig/internal/digerror"
 	"go.uber.org/dig/internal/digreflect"
 	"go.uber.org/dig/internal/dot"
 )
@@ -212,16 +211,20 @@ func (n *constructorNode) Call(c containerStore) (err error) {
 // stagingContainerWriter is a containerWriter that records the changes that
 // would be made to a containerWriter and defers them until Commit is called.
 type stagingContainerWriter struct {
-	values map[key]reflect.Value
-	groups map[key][]reflect.Value
+	values          map[key]reflect.Value
+	decoratedValues map[key]reflect.Value
+	groups          map[key][]reflect.Value
+	decoratedGroups map[key]reflect.Value
 }
 
 var _ containerWriter = (*stagingContainerWriter)(nil)
 
 func newStagingContainerWriter() *stagingContainerWriter {
 	return &stagingContainerWriter{
-		values: make(map[key]reflect.Value),
-		groups: make(map[key][]reflect.Value),
+		values:          make(map[key]reflect.Value),
+		decoratedValues: make(map[key]reflect.Value),
+		groups:          make(map[key][]reflect.Value),
+		decoratedGroups: make(map[key]reflect.Value),
 	}
 }
 
@@ -229,8 +232,8 @@ func (sr *stagingContainerWriter) setValue(name string, t reflect.Type, v reflec
 	sr.values[key{t: t, name: name}] = v
 }
 
-func (sr *stagingContainerWriter) setDecoratedValue(_ string, _ reflect.Type, _ reflect.Value) {
-	digerror.BugPanicf("stagingContainerWriter.setDecoratedValue must never be called")
+func (sr *stagingContainerWriter) setDecoratedValue(name string, t reflect.Type, v reflect.Value) {
+	sr.decoratedValues[key{t: t, name: name}] = v
 }
 
 func (sr *stagingContainerWriter) submitGroupedValue(group string, t reflect.Type, v reflect.Value) {
@@ -238,8 +241,8 @@ func (sr *stagingContainerWriter) submitGroupedValue(group string, t reflect.Typ
 	sr.groups[k] = append(sr.groups[k], v)
 }
 
-func (sr *stagingContainerWriter) submitDecoratedGroupedValue(_ string, _ reflect.Type, _ reflect.Value) {
-	digerror.BugPanicf("stagingContainerWriter.submitDecoratedGroupedValue must never be called")
+func (sr *stagingContainerWriter) submitDecoratedGroupedValue(group string, t reflect.Type, v reflect.Value) {
+	sr.decoratedGroups[key{t: t, group: group}] = v
 }
 
 // Commit commits the received results to the provided containerWriter.
@@ -248,9 +251,17 @@ func (sr *stagingContainerWriter) Commit(cw containerWriter) {
 		cw.setValue(k.name, k.t, v)
 	}
 
+	for k, v := range sr.decoratedValues {
+		cw.setDecoratedValue(k.name, k.t, v)
+	}
+
 	for k, vs := range sr.groups {
 		for _, v := range vs {
 			cw.submitGroupedValue(k.group, k.t, v)
 		}
+	}
+
+	for k, v := range sr.decoratedGroups {
+		cw.submitDecoratedGroupedValue(k.group, k.t, v)
 	}
 }
